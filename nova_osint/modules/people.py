@@ -150,7 +150,13 @@ class WikidataModule(Module):
         label = (((payload.get("labels") or {}).get("en") or {}).get("value")) or qid
         url = f"https://www.wikidata.org/wiki/{qid}"
 
-        subject = Entity.make(EntityType.PERSON, label)
+        # Keyed by Q-id, not by label. The label is the ambiguous thing: a
+        # candidate whose label equals the search term would otherwise *become*
+        # the search term's node, and this person's employer, schools and
+        # accounts would attach to a name two people share - the precise error
+        # this module exists to avoid. The id in the value is also what lets a
+        # reader check the entry rather than take it on trust.
+        subject = Entity.make(EntityType.PERSON, f"{label} ({qid})", wikidata=qid)
         if subject is None:
             return
         result.nodes.append(subject)

@@ -542,7 +542,20 @@ RENDERERS = {
     "graph": render_graph,
     #: For Gephi / yEd / Cytoscape, which do link analysis properly.
     "graphml": render_graphml_report,
+    #: The dossier: the same investigation organised around the subject rather
+    #: than around which module happened to find what.
+    "profile": lambda inv: _profile("text", inv),
+    "profile-html": lambda inv: _profile("html", inv),
+    "profile-json": lambda inv: _profile("json", inv),
 }
+
+
+def _profile(kind: str, inv: Investigation) -> str:
+    from . import dossier
+
+    return {"text": dossier.render_profile_text,
+            "html": dossier.render_profile_html,
+            "json": dossier.render_profile_json}[kind](inv)
 
 
 def write(inv: Investigation, path: Path, fmt: str | None = None) -> Path:

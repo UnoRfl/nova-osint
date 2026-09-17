@@ -165,11 +165,26 @@ def test_a_name_edge_is_worth_almost_nothing():
 
 
 def test_affiliations_link_the_candidate_not_the_search_term():
-    """The employer belongs to the candidate, not to everyone with that name."""
+    """The employer belongs to one candidate, not to the name they share.
+
+    Caught live: the candidate whose Wikidata label equalled the search term was
+    keyed on that label, so it *became* the seed node and its employer, schools
+    and accounts attached to a name two different people use. Candidates are
+    keyed on their Q-id now, which is the only thing about them that is unique.
+    """
     res = _run(WikidataModule, _wikidata_http(), "Matthew Prince", TargetType.PERSON)
-    assert ("matthew prince", "works-at", "cloudflare", "wikidata-claim") in _links(res)
-    assert not any(src == "matt prince" and dst == "cloudflare"
-                   for src, _, dst, _ in _links(res))
+    links = _links(res)
+    assert ("matthew prince (q1)", "works-at", "cloudflare", "wikidata-claim") in links
+    # The bare name - the thing the two candidates share - owns nothing but the
+    # weak candidate-for edges.
+    from_bare = {(rel, kind) for src, rel, _, kind in links if src == "matthew prince"}
+    assert from_bare == {("candidate-for", "name-similarity")}
+
+
+def test_two_candidates_stay_two_entities():
+    res = _run(WikidataModule, _wikidata_http(), "Matthew Prince", TargetType.PERSON)
+    people = {e.value for e in res.nodes if e.etype is EntityType.PERSON}
+    assert "matthew prince (q1)" in people and "matt prince (q2)" in people
 
 
 def test_declared_accounts_become_entities():
@@ -231,13 +246,21 @@ def test_corroborated_accounts_outrank_uncorroborated_ones():
     Engine.merge(graph, _run(BlueskyModule, FakeHttp({"searchActors": _json(BSKY_SEARCH)}),
                              "Matthew Prince", TargetType.PERSON))
     graph.rescore()
+    # Ranked the way the dossier ranks: strongest evidence first. Relevance
+    # alone ties these, because the Wikidata path reaches eastdakota through a
+    # candidate nobody has confirmed is the subject. That low relevance is the
+    # honest number, which is exactly why corroboration is shown beside it.
+    def strength(node):
+        edges = graph.edges_of(node.entity.eid)
+        return max((e.llr for e in edges), default=0.0), len(node.sources)
+
     handles = sorted((n for n in graph if n.entity.etype is EntityType.USERNAME),
-                     key=lambda n: -n.score)
+                     key=strength, reverse=True)
     assert handles[0].entity.value == "eastdakota"
-    assert handles[0].score > handles[1].score * 2
+    assert strength(handles[0])[0] > strength(handles[1])[0] * 2
     sources = {o.module for e in graph.edges_of("username:eastdakota")
                for o in e.observations}
-    assert sources == {"wikidata", "bluesky"}
+    assert sources == {"wikidata", "bluesky"}, "two independent sources agree"
 
 
 def test_a_profile_lookup_records_the_did_not_just_the_handle():

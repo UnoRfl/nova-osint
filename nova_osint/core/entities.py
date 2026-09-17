@@ -446,7 +446,12 @@ class Entity:
         # to connect.
         if etype is EntityType.DOMAIN and split_host(canon)[1]:
             etype = EntityType.HOST
-        return cls(etype, canon, raw if raw.casefold() != canon else "", dict(attrs))
+        # Keep the original spelling whenever it differs at all, not only when
+        # it differs by more than case. Case is meaningless in DNS and very
+        # meaningful in a person's name: dropping it rendered every candidate in
+        # a dossier as "matthew prince (q51665553)", which is the right node and
+        # the wrong thing to put in a document somebody will read.
+        return cls(etype, canon, raw if raw != canon else "", dict(attrs))
 
     def fingerprint(self) -> str:
         """Short content hash - used for evidence filenames and diff keys."""
