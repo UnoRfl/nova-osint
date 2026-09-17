@@ -183,6 +183,96 @@ def test_finishing_a_scan_lists_pivots_and_enables_export(console) -> None:
     assert not console.scanning
 
 
+# ---------------------------------------------------------------------- profile
+
+
+def _social_investigation():
+    """A scan that found two social profiles and one unreachable module."""
+    from nova_osint.core.entities import Entity, EntityType
+    from nova_osint.core.graph import EntityGraph, Observation
+    from nova_osint.core.models import ModuleStatus
+
+    inv = Investigation(target="alice", target_type=TargetType.USERNAME)
+    res = ScanResult(module="username", target="alice",
+                     target_type=TargetType.USERNAME)
+    res.add("Instagram", "https://instagram.com/alice", source="username",
+            url="https://instagram.com/alice", severity=Severity.NOTABLE)
+    res.add("TikTok", "https://www.tiktok.com/@alice", source="username",
+            url="https://www.tiktok.com/@alice", severity=Severity.NOTABLE)
+    inv.results.append(res)
+    dead = ScanResult(module="keybase", target="alice",
+                      target_type=TargetType.USERNAME)
+    dead.status = ModuleStatus.UNAVAILABLE
+    dead.status_reason = "keybase did not answer"
+    inv.results.append(dead)
+
+    seed = Entity.make(EntityType.USERNAME, "alice")
+    g = EntityGraph(seed)
+    g.connect(seed, Entity.make(EntityType.USERNAME, "bob"), "mutual-follow",
+              Observation("mutual-follow", "social-graph"))
+    g.rescore()
+    inv.graph = g
+    return inv.finish()
+
+
+def test_the_profile_tab_exists_beside_the_others(console) -> None:
+    tabs = [console.notebook.tab(i, "text").strip()
+            for i in range(console.notebook.index("end"))]
+    assert tabs == ["Findings", "Pivots", "Profile", "Live log"]
+
+
+def test_finishing_a_scan_fills_the_profile_tab(console) -> None:
+    console._finish(_social_investigation())
+    text = console.profilebox.get("1.0", "end")
+    assert "SOCIAL ACCOUNTS" in text
+    assert "Instagram" in text and "TikTok" in text
+    assert "RELATIONSHIPS" in text and "bob" in text
+
+
+def test_the_profile_tab_carries_the_coverage_gaps(console) -> None:
+    """The panel must not be the one place a dead source stops being reported."""
+    console._finish(_social_investigation())
+    text = console.profilebox.get("1.0", "end")
+    assert "COVERAGE GAPS" in text
+    assert "keybase" in text
+
+
+def test_facebook_is_shown_as_unchecked_rather_than_omitted(console) -> None:
+    console._finish(_social_investigation())
+    text = console.profilebox.get("1.0", "end")
+    assert "Facebook" in text
+    assert "nothing was checked" in text
+
+
+def test_profile_urls_are_registered_as_clickable_links(console) -> None:
+    console._finish(_social_investigation())
+    urls = set(console._profile_links.values())
+    assert "https://instagram.com/alice" in urls
+    assert "https://www.tiktok.com/@alice" in urls
+    # The shared tag is what gets the cursor and the click binding.
+    assert "link" in console.profilebox.tag_names()
+
+
+def test_the_profile_tab_is_read_only(console) -> None:
+    console._finish(_social_investigation())
+    assert str(console.profilebox["state"]) == "disabled"
+
+
+def test_a_broken_profile_does_not_take_the_scan_with_it(console, monkeypatch) -> None:
+    """A panel is a view. It must never be able to lose a completed scan."""
+    from nova_osint.core import profile as profile_mod
+
+    def explode(_inv, **_kw):
+        raise RuntimeError("profile is broken")
+
+    monkeypatch.setattr(profile_mod, "build", explode)
+    inv = _social_investigation()
+    console._finish(inv)
+    assert console.investigation is inv
+    assert "could not build the profile" in console.profilebox.get("1.0", "end")
+    assert all(str(b["state"]) == "normal" for b in console.export_btns)
+
+
 # --------------------------------------------------------------------- settings
 
 

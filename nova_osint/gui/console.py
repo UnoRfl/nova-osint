@@ -58,6 +58,8 @@ class ConsoleScreen(ttk.Frame):
         self.config_obj: Config = boot.get("config") or runtime_config()
         self.queue: queue.Queue = queue.Queue()
         self.investigation: Investigation | None = None
+        #: tag name -> url, for the clickable links in the Profile tab.
+        self._profile_links: dict[str, str] = {}
         self.scanning = False
         self.started = 0.0
         self.module_vars: dict[str, tk.BooleanVar] = {}
@@ -306,6 +308,50 @@ class ConsoleScreen(ttk.Frame):
                  bg=theme.BG_PANEL, fg=theme.INK_FAINT,
                  font=("Segoe UI", 8)).grid(row=1, column=0, sticky="w", pady=6)
 
+        # --- profile
+        # Findings answers "what did each module say". This answers "who is
+        # this" - the same investigation grouped by subject, with the social
+        # accounts at the top because that is what people look for first.
+        profile = tk.Frame(nb, bg=theme.BG_PANEL)
+        nb.add(profile, text="  Profile  ")
+        profile.rowconfigure(0, weight=1)
+        profile.columnconfigure(0, weight=1)
+        self.profilebox = tk.Text(
+            profile, bg=theme.BG_PANEL, fg=theme.INK, relief="flat",
+            highlightthickness=0, bd=0, font=("Consolas", 9), wrap="none",
+            padx=14, pady=12, spacing1=1, cursor="arrow")
+        self.profilebox.grid(row=0, column=0, sticky="nsew")
+        psb = ttk.Scrollbar(profile, orient="vertical",
+                            command=self.profilebox.yview)
+        psb.grid(row=0, column=1, sticky="ns")
+        psbx = ttk.Scrollbar(profile, orient="horizontal",
+                             command=self.profilebox.xview)
+        psbx.grid(row=1, column=0, sticky="ew")
+        self.profilebox.configure(yscrollcommand=psb.set, xscrollcommand=psbx.set)
+        for name, colour in (
+            ("h1", theme.ORCHID), ("h2", theme.CYAN), ("warnrow", theme.HIGH),
+            ("ok", theme.OK), ("dim", theme.INK_FAINT), ("plain", theme.INK),
+            ("notable", theme.NOTABLE),
+        ):
+            self.profilebox.tag_configure(name, foreground=colour)
+        self.profilebox.tag_configure("h1", font=("Consolas", 11, "bold"))
+        self.profilebox.tag_configure("h2", font=("Consolas", 9, "bold"))
+        self.profilebox.tag_configure(
+            "link", foreground=theme.CYAN, underline=True)
+        # A link in a Text widget is a tag, not a widget, so the pointer and the
+        # click have to be wired by hand or it looks clickable and is not.
+        self.profilebox.tag_bind("link", "<Enter>",
+                                 lambda _e: self.profilebox.configure(cursor="hand2"))
+        self.profilebox.tag_bind("link", "<Leave>",
+                                 lambda _e: self.profilebox.configure(cursor="arrow"))
+        self.profilebox.tag_bind("link", "<Button-1>", self._open_profile_link)
+        self.profilebox.configure(state="disabled")
+        self.profile_empty = tk.Label(
+            profile, bg=theme.BG_PANEL, fg=theme.INK_FAINT, justify="center",
+            font=("Segoe UI", 10),
+            text="no profile yet\n\nrun a scan and this fills in")
+        self.profile_empty.place(relx=0.5, rely=0.45, anchor="center")
+
         # --- live log
         logs = tk.Frame(nb, bg=theme.BG_PANEL)
         nb.add(logs, text="  Live log  ")
@@ -452,6 +498,11 @@ class ConsoleScreen(ttk.Frame):
         self.logbox.configure(state="normal")
         self.logbox.delete("1.0", "end")
         self.logbox.configure(state="disabled")
+        self.profilebox.configure(state="normal")
+        self.profilebox.delete("1.0", "end")
+        self.profilebox.configure(state="disabled")
+        self._profile_links.clear()
+        self.profile_empty.place(relx=0.5, rely=0.45, anchor="center")
         self.bar.configure(maximum=len(chosen), value=0)
 
         self._log_raw("  ", ("plain",))
@@ -605,9 +656,149 @@ class ConsoleScreen(ttk.Frame):
             self.empty.configure(text="no findings\n\nnothing public turned up "
                                       "for this target")
             self.empty.place(relx=0.5, rely=0.45, anchor="center")
+        self._render_profile(inv)
         for b in self.export_btns:
             b.configure(state="normal")
         self._reset()
+
+    # ----------------------------------------------------------------- profile
+
+    def _render_profile(self, inv: Investigation) -> None:
+        """Draw the dossier into the Profile tab.
+
+        Built from the same :mod:`nova_osint.core.profile` the CLI renders, so
+        the desktop app cannot drift into showing something different from what
+        ``-f profile`` produces - only styled differently.
+        """
+        from ..core.profile import build, confidence_line
+
+        try:
+            profile = build(inv)
+        except Exception as exc:  # noqa: BLE001 - a broken panel must not eat the scan
+            self._set_profile([(f"  could not build the profile: {exc}\n", "warnrow")])
+            return
+
+        rows: list[tuple[str, str]] = []
+
+        def head(text: str) -> None:
+            rows.append((f"\n  {text}\n", "h2"))
+
+        rows.append((f"  {profile.subject}", "h1"))
+        rows.append((f"   ({profile.subject_type})\n", "dim"))
+        rows.append((f"  {profile.entities} entities · {profile.findings} findings · "
+                     f"{len(profile.relationships)} relationships\n", "dim"))
+
+        if profile.ambiguities or profile.candidates:
+            head("WHO THIS IS  —  read before anything below")
+            for note in profile.ambiguities:
+                rows.append((f"    ! {note}\n", "warnrow"))
+            for c in profile.candidates:
+                rows.append((f"    {c.grade}  {c.value}", "plain"))
+                rows.append((f"   [{c.why}]\n", "dim"))
+            rows.append(("    NOVA has not decided which of these is your "
+                         "subject.\n", "warnrow"))
+
+        head("ASSESSMENT")
+        rows.append((f"    {confidence_line(profile)}\n", "plain"))
+        if profile.truncated:
+            rows.append((f"    incomplete: the scan stopped on "
+                         f"{profile.truncated}\n", "warnrow"))
+
+        head("SOCIAL ACCOUNTS")
+        if profile.socials:
+            width = max(len(a.platform) for a in profile.socials)
+            for a in profile.socials:
+                mark = {"confirmed": "+", "declared": "~", "search": "?"}[a.basis]
+                tag = {"confirmed": "ok", "declared": "notable",
+                       "search": "dim"}[a.basis]
+                handle = f"@{a.handle}" if a.handle != "-" else ""
+                rows.append((f"    {mark}  {a.platform.ljust(width)}  ", tag))
+                rows.append((f"{handle:<22} ", "plain"))
+                rows.append((a.url, "link"))
+                rows.append(("\n", "plain"))
+                if a.note:
+                    rows.append((f"       {' ' * width}  {a.note}\n", "dim"))
+            rows.append(("\n    + verified by a lookup   ~ declared by a source   "
+                         "? not checkable, open by hand\n", "dim"))
+        else:
+            rows.append(("    (none found)\n", "dim"))
+
+        if profile.relationships:
+            head("RELATIONSHIPS")
+            indirect = [r for r in profile.relationships if r.indirect]
+            direct = [r for r in profile.relationships if not r.indirect]
+            if indirect:
+                rows.append(("    between other parties:\n", "dim"))
+                for r in indirect[:30]:
+                    rows.append((f"      {r.grade}  {r.a}  --{r.relation}-->  "
+                                 f"{r.b}", "plain"))
+                    rows.append((f"   [{r.why}]\n", "dim"))
+            if direct:
+                rows.append(("    to the subject:\n", "dim"))
+                for r in direct[:40]:
+                    rows.append((f"      {r.grade}  {r.relation:<18} {r.b}", "plain"))
+                    rows.append((f"   [{r.why}] - {r.reading}\n", "dim"))
+
+        from ..core.profile import SECTIONS
+
+        for heading, _kinds, note in SECTIONS:
+            entries = profile.sections.get(heading, [])
+            head(f"{heading.upper()}   ({len(entries)})")
+            rows.append((f"    {note}\n", "dim"))
+            if not entries:
+                rows.append(("    (none found)\n", "dim"))
+                continue
+            for e in entries:
+                rows.append((f"      {e.grade}  {e.value}", "plain"))
+                rows.append((f"   [{e.why}]\n", "dim"))
+
+        if profile.timeline:
+            head("TIMELINE")
+            for when, what, module in profile.timeline:
+                rows.append((f"      {when}  {what}", "plain"))
+                rows.append((f"   ({module})\n", "dim"))
+
+        if profile.exposure:
+            head("EXPOSURE  —  high interest")
+            for label, value, module in profile.exposure[:40]:
+                rows.append((f"      {label}: {value}", "notable"))
+                rows.append((f"   ({module})\n", "dim"))
+
+        head("COVERAGE GAPS")
+        if profile.gaps:
+            rows.append(("    these sources did not answer; absence here is not "
+                         "evidence of absence\n", "dim"))
+            for gap in profile.gaps:
+                rows.append((f"      {gap}\n", "warnrow"))
+        else:
+            rows.append(("    every source answered\n", "ok"))
+
+        self._set_profile(rows)
+
+    def _set_profile(self, rows: list[tuple[str, str]]) -> None:
+        self.profile_empty.place_forget()
+        self.profilebox.configure(state="normal")
+        self.profilebox.delete("1.0", "end")
+        self._profile_links.clear()
+        for text, tag in rows:
+            if tag == "link":
+                # Each link needs its own tag as well as the shared "link" one,
+                # so the click handler can tell which URL was hit.
+                name = f"url{len(self._profile_links)}"
+                self._profile_links[name] = text
+                self.profilebox.insert("end", text, ("link", name))
+            else:
+                self.profilebox.insert("end", text, (tag,))
+        self.profilebox.configure(state="disabled")
+
+    def _open_profile_link(self, event: object) -> None:
+        import webbrowser
+
+        for name in self.profilebox.tag_names("current"):
+            url = self._profile_links.get(name)
+            if url:
+                webbrowser.open(url)
+                return
 
     def _reset(self) -> None:
         self.scanning = False

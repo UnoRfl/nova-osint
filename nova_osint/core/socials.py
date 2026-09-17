@@ -243,12 +243,17 @@ def _unchecked(inv: Investigation, found: list[SocialAccount],
                subject_handles: set[str] | None) -> list[SocialAccount]:
     """Rows for the platforms nobody could check, so their absence is explained."""
     seen = {a.platform for a in found}
-    handles = set(subject_handles or ())
+    # The subject, not whichever handle sorts first. The graph contains every
+    # account the scan touched - co-maintainers, followers, org colleagues - and
+    # taking the alphabetically-first one sent the reader off to search Facebook
+    # for somebody the subject merely shares an npm package with.
     if inv.target_type.value in ("username", "person"):
-        handles.add(inv.target)
-    if not handles:
+        subject = inv.target
+    elif subject_handles:
+        subject = sorted(subject_handles)[0]
+    else:
         return []
-    query = urllib.parse.quote(sorted(handles)[0])
+    query = urllib.parse.quote(subject)
 
     out = []
     for platform, (template, note) in UNCHECKABLE.items():

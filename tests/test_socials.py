@@ -216,3 +216,26 @@ def test_the_panel_sits_above_the_entity_sections():
     ])
     text = RENDERERS["profile"](inv)
     assert text.index("SOCIAL ACCOUNTS") < text.index("INFRASTRUCTURE")
+
+
+def test_the_search_link_looks_for_the_subject_not_a_bystander():
+    """Caught in a screenshot: ?q=novemberborn on a scan of sindresorhus.
+
+    The graph holds every handle the scan touched - co-maintainers, followers,
+    org colleagues - and picking the alphabetically first one sent the reader to
+    search Facebook for somebody the subject merely shares a package with.
+    """
+    inv = _inv(target="sindresorhus", rows=[
+        ("username", "GitHub", "https://github.com/sindresorhus",
+         "https://github.com/sindresorhus", "username"),
+    ])
+    accounts = collect(inv, subject_handles={"novemberborn", "avajs", "sindresorhus"})
+    facebook = next(a for a in accounts if a.platform == "Facebook")
+    assert "q=sindresorhus" in facebook.url
+    assert "novemberborn" not in facebook.url
+
+
+def test_a_non_person_target_falls_back_to_a_discovered_handle():
+    inv = Investigation(target="example.com", target_type=TargetType.DOMAIN).finish()
+    accounts = collect(inv, subject_handles={"acmecorp"})
+    assert any("acmecorp" in a.url for a in accounts if a.platform == "Facebook")
