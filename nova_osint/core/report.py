@@ -423,6 +423,18 @@ def render_html(inv: Investigation) -> str:
     return "".join(parts)
 
 
+def render_graph(inv: Investigation) -> str:
+    from .graphview import render_graph_html
+
+    return render_graph_html(inv)
+
+
+def render_graphml_report(inv: Investigation) -> str:
+    from .graphview import render_graphml
+
+    return render_graphml(inv)
+
+
 RENDERERS = {
     "console": lambda inv: render_console(inv),
     "json": render_json,
@@ -430,6 +442,11 @@ RENDERERS = {
     "markdown": render_markdown,
     "md": render_markdown,
     "html": render_html,
+    #: The investigation as a picture. Self-contained: no CDN, no network, so
+    #: it still works attached to a case file on an offline machine.
+    "graph": render_graph,
+    #: For Gephi / yEd / Cytoscape, which do link analysis properly.
+    "graphml": render_graphml_report,
 }
 
 

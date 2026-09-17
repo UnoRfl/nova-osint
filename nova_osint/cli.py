@@ -100,6 +100,11 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--no-save", action="store_true",
                       help="do not record this scan in the case store")
     scan.add_argument("--label", default="", help="a note stored with the case")
+    scan.add_argument("--redact", action="store_true",
+                      help="mask emails, handles and phone numbers in the OUTPUT "
+                           "(the case store still keeps the real values)")
+    scan.add_argument("--redact-salt", default="",
+                      help="reuse a salt so two redacted reports use the same tokens")
     scan.add_argument("--pivot", action="store_true",
                       help="also scan discovered IPs, emails and usernames (one level deep)")
     scan.add_argument("--pivot-limit", type=int, default=5, help="max pivots to follow")
@@ -458,6 +463,19 @@ def cmd_scan(args: argparse.Namespace) -> int:
     if store is not None:
         store.close()
 
+    rendered = inv
+    if args.redact:
+        from .core.graphview import Redactor, redact_investigation
+
+        redactor = Redactor(True, args.redact_salt)
+        # Redact a copy. The store already holds the real values, and mutating
+        # in place would redact whatever ran afterwards - including the save.
+        rendered = redact_investigation(inv, redactor)
+        if not args.quiet:
+            print(f"redacted {redactor.count} personal value(s) from the output",
+                  file=sys.stderr)
+
+    inv = rendered
     if args.format == "console":
         out = reporting.render_console(
             inv, verbose=args.verbose > 0, min_severity=Severity(args.min_severity)
