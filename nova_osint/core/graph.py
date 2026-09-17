@@ -93,6 +93,14 @@ EVIDENCE: dict[str, float] = {
     "key-uid": 5.0,              # identity baked into a published public key
     "published-contact": 3.0,    # security.txt and friends
     "passive-dns": 2.0,          # historic resolution, demoted by hub degree
+    # -- people and relationships -------------------------------------------
+    "corporate-officer": 4.0,    # named as CEO/founder/director of an entity
+    "wikidata-claim": 3.0,       # curated statement; good, and editable by anyone
+    "org-member": 2.5,           # public, opt-in membership of an organisation
+    "co-maintainer": 2.0,        # both publish the same package
+    "co-author": 2.5,            # Co-authored-by on the same commit
+    "mutual-follow": 1.0,        # they follow each other: a relationship
+    "social-follow": 0.3,        # one-way: an interest, not a relationship
     # behavioural / fingerprint ---------------------------------------------
     "favicon-hash": 2.5,
     "page-structure-hash": 2.0,

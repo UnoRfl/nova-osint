@@ -49,7 +49,34 @@ def detect_type(target: str) -> TargetType:
         return TargetType.DOMAIN
     if _USERNAME_RE.match(t):
         return TargetType.USERNAME
+    if _looks_like_a_name(t):
+        return TargetType.PERSON
     return TargetType.UNKNOWN
+
+
+#: One name token: letters, plus the punctuation real names contain. Digits are
+#: excluded deliberately - "user 123" is not a name, and admitting it would turn
+#: every stray two-word string into a person search.
+_NAME_TOKEN = re.compile(r"^[^\W\d_]([^\W\d_]|['’.‐-―-])*\.?$", re.UNICODE)
+
+
+def _looks_like_a_name(text: str) -> bool:
+    """Is this a human name rather than a handle or a typo?
+
+    Conservative on purpose, and it can only ever fire on input that used to be
+    ``UNKNOWN``: the username pattern rejects spaces, so nothing that previously
+    resolved to a handle can be stolen by this. The cost of a false positive
+    here is a wasted person search; the cost of being too eager is that
+    ``--type`` stops meaning anything.
+
+    Accepts ``Ada Lovelace``, ``Jean-Luc Picard``, ``J. R. R. Tolkien``,
+    ``Ursula K. Le Guin``, ``O'Brien Smith``. Rejects handles, anything with a
+    digit, and anything over five tokens (that is a sentence, not a name).
+    """
+    tokens = text.split()
+    if not 2 <= len(tokens) <= 5:
+        return False
+    return all(1 <= len(tok) <= 24 and _NAME_TOKEN.match(tok) for tok in tokens)
 
 
 class Module:
@@ -137,6 +164,7 @@ def import_modules() -> None:
         email,
         github,
         ip,
+        people,
         phone,
         securitytrails,
         username,

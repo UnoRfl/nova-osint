@@ -25,6 +25,10 @@ if TYPE_CHECKING:  # pragma: no cover - import cycle: entities needs TargetType
 
 class TargetType(str, Enum):
     USERNAME = "username"
+    #: A human name. Deliberately separate from USERNAME: a handle identifies
+    #: one account, a name identifies a set of people, and treating the second
+    #: like the first is how these tools produce confident nonsense.
+    PERSON = "person"
     EMAIL = "email"
     DOMAIN = "domain"
     IP = "ip"

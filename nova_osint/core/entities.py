@@ -86,6 +86,9 @@ _LOOKUPABLE = frozenset({
     EntityType.DOMAIN, EntityType.HOST, EntityType.IP, EntityType.CIDR,
     EntityType.ASN, EntityType.EMAIL, EntityType.USERNAME, EntityType.PHONE,
     EntityType.URL,
+    # A name is searchable, but it is the weakest kind of lead there is, so the
+    # relevance score has to carry it rather than the type. See PERSON_NAME_RE.
+    EntityType.PERSON,
 })
 
 
@@ -96,6 +99,7 @@ FROM_TARGET_TYPE = {
     TargetType.DOMAIN: EntityType.DOMAIN,
     TargetType.EMAIL: EntityType.EMAIL,
     TargetType.USERNAME: EntityType.USERNAME,
+    TargetType.PERSON: EntityType.PERSON,
     TargetType.IP: EntityType.IP,
     TargetType.PHONE: EntityType.PHONE,
     TargetType.URL: EntityType.URL,
@@ -108,6 +112,7 @@ TO_TARGET_TYPE = {
     EntityType.HOST: TargetType.DOMAIN,
     EntityType.EMAIL: TargetType.EMAIL,
     EntityType.USERNAME: TargetType.USERNAME,
+    EntityType.PERSON: TargetType.PERSON,
     EntityType.IP: TargetType.IP,
     EntityType.PHONE: TargetType.PHONE,
     EntityType.URL: TargetType.URL,
