@@ -1,0 +1,35 @@
+# secrets - also listed in .claudeignore, because one of the two alone leaves
+# the other path open: git-ignored files are still readable by an agent, and
+# agent-ignored files still commit.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets.json
+
+# scan output: reports contain data about real people and infrastructure
+reports/
+out/
+*.osint.json
+*.osint.html
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# editors / os
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

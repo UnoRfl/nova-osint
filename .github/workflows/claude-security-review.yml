@@ -1,0 +1,36 @@
+name: claude security review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    # Wired inert on purpose. This action bills metered API usage, which a
+    # Claude subscription does not cover, so every step is gated on a key
+    # actually existing. With no key the job skips and costs nothing; add
+    # CLAUDE_API_KEY to repository secrets to turn it on.
+    env:
+      HAS_KEY: ${{ secrets.CLAUDE_API_KEY != '' }}
+    steps:
+      - if: env.HAS_KEY == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - if: env.HAS_KEY == 'true'
+        uses: anthropics/claude-code-security-review@0c6a49f1fa56a1d472575da86a94dbc1edb78eda # main
+        with:
+          claude-api-key: ${{ secrets.CLAUDE_API_KEY }}
+          comment-pr: true
+
+      - if: env.HAS_KEY != 'true'
+        run: echo "CLAUDE_API_KEY is not set; skipping the review at no cost."

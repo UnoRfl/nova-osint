@@ -1,0 +1,29 @@
+# Seed list; the full blocklist is fetched from the disposable-email-domains
+# project at runtime and merged with this one.
+0-mail.com
+10minutemail.com
+20minutemail.com
+33mail.com
+dispostable.com
+guerrillamail.com
+mailinator.com
+maildrop.cc
+temp-mail.org
+tempmail.com
+throwawaymail.com
+yopmail.com
+trashmail.com
+getnada.com
+sharklasers.com
+grr.la
+spam4.me
+mohmal.com
+fakeinbox.com
+emailondeck.com
+tempr.email
+moakt.com
+burnermail.io
+anonaddy.me
+simplelogin.io
+mailnesia.com
+inboxbear.com

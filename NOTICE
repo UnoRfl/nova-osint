@@ -1,0 +1,17 @@
+NOVA bundles and fetches data from other open-source projects.
+
+sherlock-project/sherlock (MIT License)
+  The username site database follows Sherlock's data.json schema, and
+  `--refresh-sites` downloads their maintained catalogue directly. The curated
+  list in nova_osint/data/sites.json is derived from that file.
+  https://github.com/sherlock-project/sherlock
+
+disposable-email-domains/disposable-email-domains (MIT License)
+  The throwaway-mail blocklist is fetched from this project at runtime and
+  merged with the small seed list in nova_osint/data/disposable.txt.
+  https://github.com/disposable-email-domains/disposable-email-domains
+
+Public services queried at runtime, each under its own terms:
+  rdap.org, Cloudflare DNS, Google Public DNS, crt.sh, SSLMate CertSpotter,
+  HackerTarget, RapidDNS, Have I Been Pwned, Shodan InternetDB, ip-api.com,
+  the Internet Archive, Gravatar and the GitHub REST API.

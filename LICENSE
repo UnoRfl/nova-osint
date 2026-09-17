@@ -1,0 +1,44 @@
+Copyright (c) 2026 uno. All rights reserved.
+
+This source code is published for reference and evaluation only.
+
+No permission is granted to use, copy, modify, merge, publish, distribute,
+sublicense, or sell this software or any substantial portion of it, in source
+or binary form, for any purpose, commercial or non-commercial.
+
+Viewing this repository, and forking it through GitHub's interface, is
+permitted solely because GitHub's Terms of Service require it of public
+repositories. Neither act grants you any licence to the code beyond that.
+
+If you want to use any of this, ask. Permission is given in writing or not
+at all.
+
+---
+
+THIRD-PARTY CONTENT
+
+The restriction above covers this project's own code. It does not and cannot
+cover material incorporated from other projects, which remains under its own
+terms:
+
+  nova_osint/data/sites.json is derived from the site catalogue maintained by
+  sherlock-project/sherlock, which is MIT licensed. That file, and anything
+  `--refresh-sites` downloads at runtime, stays MIT and carries Sherlock's
+  copyright.
+
+  nova_osint/data/disposable.txt seeds a blocklist merged at runtime with
+  disposable-email-domains/disposable-email-domains, which is MIT licensed.
+
+See NOTICE for the full attribution, including the third-party services this
+tool queries at runtime under their own terms.
+
+---
+
+NO WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
