@@ -88,6 +88,18 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--exclude", help="comma-separated module names to skip")
     scan.add_argument("--passive", action="store_true", default=None,
                       help="never touch the target's own infrastructure")
+    scan.add_argument("--expand", action="store_true",
+                      help="keep going: scan whatever the target connects to, "
+                           "best-evidenced leads first")
+    scan.add_argument("--budget", choices=["quick", "normal", "deep"], default="normal",
+                      help="how much an --expand walk may spend (default: normal)")
+    scan.add_argument("--depth", type=int, default=None,
+                      help="override the expansion depth limit")
+    scan.add_argument("--max-entities", type=int, default=None,
+                      help="override the expansion entity cap")
+    scan.add_argument("--no-save", action="store_true",
+                      help="do not record this scan in the case store")
+    scan.add_argument("--label", default="", help="a note stored with the case")
     scan.add_argument("--pivot", action="store_true",
                       help="also scan discovered IPs, emails and usernames (one level deep)")
     scan.add_argument("--pivot-limit", type=int, default=5, help="max pivots to follow")
@@ -113,6 +125,52 @@ def build_parser() -> argparse.ArgumentParser:
     mods.add_argument("-t", "--type", choices=[t.value for t in TargetType],
                       help="only modules that accept this target type")
     _common(mods)
+
+    hist = sub.add_parser("history", help="list saved cases")
+    hist.add_argument("target", nargs="?", help="only cases for this target")
+    hist.add_argument("-n", "--limit", type=int, default=25, help="how many to list")
+    hist.add_argument("-f", "--format", choices=["text", "json"], default="text")
+    _common(hist)
+
+    show = sub.add_parser("show", help="print a saved case")
+    show.add_argument("case", help="case id, or an unambiguous prefix of one")
+    show.add_argument("-n", "--limit", type=int, default=20,
+                      help="how many entities to list")
+    show.add_argument("-f", "--format", choices=["text", "json"], default="text")
+    _common(show)
+
+    dif = sub.add_parser("diff", help="what changed between two scans")
+    dif.add_argument("old", help="older case id, or a target to compare its last two runs")
+    dif.add_argument("new", nargs="?", help="newer case id")
+    dif.add_argument("-f", "--format", choices=["text", "json"], default="text")
+    _common(dif)
+
+    lnk = sub.add_parser("link", help="entities two saved cases have in common")
+    lnk.add_argument("case_a")
+    lnk.add_argument("case_b")
+    lnk.add_argument("-f", "--format", choices=["text", "json"], default="text")
+    _common(lnk)
+
+    whr = sub.add_parser("where", help="which saved cases have seen this value")
+    whr.add_argument("value")
+    whr.add_argument("-t", "--type", help="entity type, if the guess is wrong")
+    _common(whr)
+
+    rep = sub.add_parser("replay", help="re-derive a case from its stored evidence")
+    rep.add_argument("case")
+    rep.add_argument("-f", "--format", choices=["text", "json"], default="text")
+    _common(rep)
+
+    evi = sub.add_parser("evidence", help="verify stored evidence, or print one blob")
+    evi.add_argument("case", nargs="?", help="limit the check to one case")
+    evi.add_argument("--digest", help="print this blob to stdout instead")
+    _common(evi)
+
+    doc = sub.add_parser("doctor", help="probe every source from this machine")
+    doc.add_argument("--keyless", action="store_true",
+                     help="skip sources that need an API key")
+    doc.add_argument("-f", "--format", choices=["text", "json"], default="text")
+    _common(doc)
 
     cfg = sub.add_parser("config", help="show, create or locate the configuration file")
     cfg.add_argument("action", nargs="?", default="show", choices=["show", "init", "path"],
@@ -146,6 +204,8 @@ def _common(sp: argparse.ArgumentParser) -> None:
                    help=f"configuration file (default: {DEFAULT_CONFIG_PATH})")
     d.add_argument("-v", "--verbose", action="count", default=0,
                    help="-v for progress logging, -vv for debug")
+    d.add_argument("--case-dir", type=Path, default=None,
+                   help="where cases, evidence and the audit log live")
     d.add_argument("--log-file", type=Path, default=None,
                    help="also write a full debug log here (API keys are redacted)")
 
@@ -287,6 +347,56 @@ def _resolve_output(path: Path, cfg: Config) -> Path:
     return path
 
 
+def _budget(args: argparse.Namespace):
+    """Turn --budget/--depth/--max-entities into an expansion budget."""
+    from .core.engine import Budget
+
+    budget = {"quick": Budget.quick, "deep": Budget.deep}.get(args.budget, Budget)()
+    if args.depth is not None:
+        budget.max_depth = args.depth
+    if args.max_entities is not None:
+        budget.max_entities = args.max_entities
+    return budget
+
+
+def _open_store(args: argparse.Namespace):
+    """The case store for this scan, or ``None`` if we are not recording.
+
+    Opened *before* the engine, not after, so the evidence store is in place for
+    the first request. A store attached at the end records the findings but none
+    of the bytes they came from, which makes ``nova replay`` silently useless -
+    it reports 0% coverage on a case that looks complete.
+    """
+    if args.no_save:
+        return None
+    try:
+        from .core.store import CaseStore
+
+        return CaseStore(getattr(args, "case_dir", None))
+    except Exception as exc:  # noqa: BLE001 - filing must never cost the findings
+        log.warning("case store unavailable, this scan will not be saved: %s: %s",
+                    type(exc).__name__, exc)
+        return None
+
+
+def _save_case(store, args: argparse.Namespace, inv) -> str:
+    """Record the scan. Never fails it.
+
+    A scan that completed and could not be filed is still a scan the user wants
+    to read, so every failure here is a warning and nothing more.
+    """
+    if store is None:
+        return ""
+    try:
+        from . import commands
+
+        cid = store.save(inv, inv.graph, label=args.label, requests=inv.requests)
+        return commands.summarise_for_terminal(store, cid)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not save this scan: %s: %s", type(exc).__name__, exc)
+        return ""
+
+
 def cmd_scan(args: argparse.Namespace) -> int:
     manager, cfg = load_config(args)
     ttype = TargetType(args.type) if args.type else detect_type(args.target)
@@ -303,17 +413,23 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
     progress = Progress(not args.quiet and not args.verbose)
     started = time.time()
-    with Engine(cfg, progress=progress) as engine:
+    store = _open_store(args)
+    evidence = store.evidence if store is not None else None
+    with Engine(cfg, progress=progress, evidence=evidence) as engine:
         only = args.only.split(",") if args.only else None
         exclude = args.exclude.split(",") if args.exclude else None
         try:
             _, runnable, skipped = engine.plan(args.target, only, exclude, ttype)
         except ValueError as exc:  # unknown module name in --only
+            if store is not None:
+                store.close()
             print(exc, file=sys.stderr)
             return EXIT_USAGE
 
         if not runnable:
             progress.clear()
+            if store is not None:
+                store.close()
             print(f"no modules accept a {ttype.value} target with these filters",
                   file=sys.stderr)
             for name, reason in skipped:
@@ -326,11 +442,21 @@ def cmd_scan(args: argparse.Namespace) -> int:
                 print(f"  skipping {name} ({reason})", file=sys.stderr)
             print(file=sys.stderr)
 
-        inv = engine.scan(args.target, only, exclude, ttype)
+        if args.expand:
+            inv = engine.investigate(args.target, only, exclude, ttype,
+                                     budget=_budget(args))
+        else:
+            inv = engine.scan(args.target, only, exclude, ttype)
         pivot_scans = []
-        if args.pivot:
+        if args.pivot and not args.expand:
+            # --expand supersedes --pivot; running both would scan the same
+            # entities twice and print them under two different headings.
             pivot_scans = engine.follow_pivots(inv, limit=args.pivot_limit)
     progress.clear()
+
+    case_id = _save_case(store, args, inv)
+    if store is not None:
+        store.close()
 
     if args.format == "console":
         out = reporting.render_console(
@@ -342,6 +468,15 @@ def cmd_scan(args: argparse.Namespace) -> int:
         out = reporting.render_json(inv, pivot_scans)
     else:
         out = reporting.RENDERERS[args.format](inv)
+
+    if args.expand and inv.expansion is not None and not args.quiet:
+        exp = inv.expansion
+        print(f"\nexpanded {len(exp.expanded)} entit(ies) over {exp.rounds} "
+              f"round(s); stopped by {exp.stopped_by}", file=sys.stderr)
+        for eid, score in exp.unexplored[:5]:
+            print(f"  not reached: {eid} (score {score:.3f})", file=sys.stderr)
+    if case_id and not args.quiet:
+        print(case_id, file=sys.stderr)
 
     if args.output:
         destination = _resolve_output(args.output, cfg)
@@ -355,6 +490,52 @@ def cmd_scan(args: argparse.Namespace) -> int:
     # An incomplete scan with findings is still a successful run; the report
     # says which instruments fell short, so the exit code stays about findings.
     return EXIT_OK if inv.findings else EXIT_NO_FINDINGS
+
+
+#: Subcommands that read the case store and nothing else.
+_CASE_COMMANDS = frozenset({"history", "show", "diff", "link", "where", "replay",
+                            "evidence"})
+
+
+def _run_case_command(args: argparse.Namespace) -> int:
+    """Open the case store once and hand it to the right command.
+
+    The store is opened here rather than inside each command so there is exactly
+    one place that decides where cases live, and exactly one that closes the
+    connection.
+    """
+    from . import commands
+    from .core.store import CaseStore
+
+    _, cfg = load_config(args)
+    try:
+        store = CaseStore(getattr(args, "case_dir", None))
+    except RuntimeError as exc:  # a newer schema; refusing beats corrupting
+        print(exc, file=sys.stderr)
+        return EXIT_USAGE
+    except OSError as exc:
+        # An unwritable --case-dir is a typo, not a crash. A traceback here
+        # buries the one thing the user needs to see: which path failed.
+        print(f"cannot open the case store: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    try:
+        if args.command == "history":
+            return commands.cmd_history(args, store)
+        if args.command == "show":
+            return commands.cmd_show(args, store)
+        if args.command == "diff":
+            return commands.cmd_diff(args, store)
+        if args.command == "link":
+            return commands.cmd_link(args, store)
+        if args.command == "where":
+            return commands.cmd_where(args, store)
+        if args.command == "replay":
+            return commands.cmd_replay(args, store, cfg)
+        if args.command == "evidence":
+            return commands.cmd_evidence(args, store)
+    finally:
+        store.close()
+    return EXIT_USAGE
 
 
 def _force_utf8() -> None:
@@ -380,6 +561,13 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_modules(args)
     if args.command == "config":
         return cmd_config(args)
+    if args.command in _CASE_COMMANDS:
+        return _run_case_command(args)
+    if args.command == "doctor":
+        from . import commands
+
+        _, cfg = load_config(args)
+        return commands.cmd_doctor(args, cfg)
     if args.command == "legal":
         print(LEGAL)
         return EXIT_OK

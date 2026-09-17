@@ -62,7 +62,7 @@ log = get_logger("store")
 
 DEFAULT_CASE_DIR = Path.home() / ".local" / "share" / "nova-osint"
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS cases (
@@ -161,7 +161,15 @@ CREATE TABLE IF NOT EXISTS requests (
     access    TEXT DEFAULT '',
     bytes     INTEGER DEFAULT 0,
     elapsed   REAL DEFAULT 0,
-    digest    TEXT
+    digest    TEXT,
+    -- Kept so `nova replay` can rebuild a Response faithfully; a parser that
+    -- reads a header would otherwise see an empty dict on replay and the
+    -- regression the replay exists to catch would be invisible.
+    headers   TEXT DEFAULT '{}',
+    -- Where the request actually landed. Differs from url whenever a source
+    -- redirects (rdap.org hands off to the registry), and both are worth
+    -- keeping: one is what we asked, the other is who answered.
+    final_url TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS requests_case ON requests(case_id, at);
 """
@@ -414,6 +422,12 @@ class CaseStore:
             conn.executescript(_SCHEMA)
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             conn.commit()
+        elif version < SCHEMA_VERSION:
+            for step in range(version + 1, SCHEMA_VERSION + 1):
+                _MIGRATIONS[step](conn)
+                conn.execute(f"PRAGMA user_version={step}")
+            conn.commit()
+            log.info("migrated case store from schema v%d to v%d", version, SCHEMA_VERSION)
         elif version > SCHEMA_VERSION:
             # Refuse rather than corrupt: a newer NOVA wrote this file and we do
             # not know what it added.
@@ -549,11 +563,12 @@ class CaseStore:
                         requests: list[dict[str, Any]]) -> None:
         conn.executemany(
             "INSERT INTO requests "
-            "(case_id,at,module,method,url,status,access,bytes,elapsed,digest) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "(case_id,at,module,method,url,status,access,bytes,elapsed,digest,"
+            " headers,final_url) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             [(cid, r.get("at", 0.0), r.get("module", ""), r.get("method", "GET"),
               r.get("url", ""), r.get("status"), r.get("access", ""),
-              r.get("bytes", 0), r.get("elapsed", 0.0), r.get("digest"))
+              r.get("bytes", 0), r.get("elapsed", 0.0), r.get("digest"),
+              json.dumps(r.get("headers") or {}), r.get("final_url", ""))
              for r in requests],
         )
 
@@ -746,3 +761,18 @@ class CaseStore:
             "audit_entries": entries if intact else -1,
             "audit_intact": intact,
         }
+
+
+def _migrate_1_to_2(conn: sqlite3.Connection) -> None:
+    """v2 keeps response headers, so a replay can rebuild the real Response."""
+    conn.execute("ALTER TABLE requests ADD COLUMN headers TEXT DEFAULT '{}'")
+
+
+def _migrate_2_to_3(conn: sqlite3.Connection) -> None:
+    """v3 keeps the redirect target alongside the requested URL."""
+    conn.execute("ALTER TABLE requests ADD COLUMN final_url TEXT DEFAULT ''")
+
+
+#: Applied in order by :meth:`CaseStore._migrate`. A store two versions behind
+#: runs both, so an old case directory keeps working instead of being refused.
+_MIGRATIONS = {2: _migrate_1_to_2, 3: _migrate_2_to_3}

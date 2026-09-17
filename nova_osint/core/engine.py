@@ -64,6 +64,18 @@ _REFUSAL_STATUS = {
 }
 
 
+#: Response headers that must not reach the case file. A stored Set-Cookie is a
+#: live credential sitting in a database the user will copy between machines and
+#: attach to reports; nothing in NOVA reads one back, so it is dropped rather
+#: than kept for completeness.
+_SECRET_HEADERS = frozenset({"set-cookie", "set-cookie2", "authorization",
+                             "proxy-authenticate", "www-authenticate"})
+
+
+def _safe_headers(headers: dict[str, str]) -> dict[str, str]:
+    return {k: v for k, v in headers.items() if k.lower() not in _SECRET_HEADERS}
+
+
 class _ModuleHttp:
     """A per-module view of the shared fetcher that remembers how sources replied.
 
@@ -92,7 +104,7 @@ class _ModuleHttp:
 
     def get(self, url: str, **kw: Any) -> Response:
         resp = self._fetcher.get(url, **kw)
-        self._record(resp)
+        self._record(resp, requested=url)
         return resp
 
     def head(self, url: str, **kw: Any) -> Response:
@@ -110,7 +122,7 @@ class _ModuleHttp:
 
     # -- bookkeeping --------------------------------------------------------
 
-    def _record(self, resp: Response) -> None:
+    def _record(self, resp: Response, requested: str | None = None) -> None:
         digest = None
         if self.evidence is not None and resp.body:
             # Outside the lock: hashing and gzipping a megabyte of HTML while
@@ -120,10 +132,16 @@ class _ModuleHttp:
         with self._lock:
             self.seen[resp.access] += 1
             self.ledger.append({
-                "at": time.time(), "module": self.module, "url": resp.url,
+                # The URL the module asked for, which is what a replay looks up.
+                # resp.url is where we ended up: rdap.org redirects to the
+                # registry's own server, and keying on the landing URL meant a
+                # replay could not find the recording it had just made.
+                "at": time.time(), "module": self.module,
+                "url": requested or resp.url, "final_url": resp.url,
                 "status": resp.status, "access": resp.access.value,
                 "bytes": len(resp.body), "elapsed": round(resp.elapsed, 3),
                 "digest": digest, "cached": resp.from_cache,
+                "headers": _safe_headers(resp.headers),
             })
 
     @property
