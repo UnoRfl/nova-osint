@@ -27,7 +27,6 @@ from ..core.engine import Engine
 from ..core.models import Investigation, ScanResult, Severity, TargetType
 from ..core.registry import detect_type, modules_for
 from . import orbit, theme
-from .orbit import OrbitCanvas
 from .settings import SettingsWindow
 
 PLACEHOLDER = "domain, email, username, IP, phone or URL"
@@ -94,8 +93,10 @@ class ConsoleScreen(ttk.Frame):
         inner.pack(fill="x")
         inner.columnconfigure(1, weight=1)
 
-        self.mini = OrbitCanvas(inner, width=140, height=72, star_count=24,
-                                show_rings=False, speed=0.7)
+        # Not the solar system: at 140x72 five orbits, a sun and the NOVA tag
+        # all landed on top of each other. One ringed world with a moon is what
+        # a strip this size can hold and still look like something.
+        self.mini = orbit.RingedPlanet(inner, width=140, height=72, star_count=30)
         self.mini.grid(row=0, column=0, rowspan=2, padx=(0, 18))
         self.mini.start()
 
@@ -381,11 +382,15 @@ class ConsoleScreen(ttk.Frame):
         bar.grid(row=3, column=0, columnspan=2, sticky="ew")
         bar.columnconfigure(1, weight=1)   # the text block takes the slack
 
-        # The same orbit the boot screen draws, shrunk. Reusing OrbitCanvas
+        # The same orbit the boot screen draws, shrunk — reusing OrbitCanvas
         # rather than drawing a second spinner means there is one animation in
-        # the app and it cannot drift out of step with itself.
+        # the app and it cannot drift out of step with itself. Seen from
+        # straight above rather than at the boot screen's angle: at this size
+        # the squashed ellipses collapse into a bar, where concentric circles
+        # read immediately as something going round.
         self.spinner = orbit.OrbitCanvas(
-            bar, width=38, height=38, star_count=14, show_rings=True, speed=2.2)
+            bar, width=44, height=44, star_count=10, show_rings=True,
+            speed=2.2, tilt=orbit.TILT_TOP_DOWN)
         self.spinner.configure(bg=theme.BG_PANEL)
         self.spinner.grid(row=0, column=0, sticky="w", padx=(0, 10))
         self.spinner.grid_remove()   # only on screen while something is running
