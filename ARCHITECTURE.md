@@ -242,6 +242,116 @@ hitting `crt.sh` still queue behind one another.
 
 ---
 
+## The investigation layer
+
+Everything above describes one scan. These four files turn a sequence of scans
+into an investigation, and they are the part worth understanding first.
+
+### `core/entities.py` — what things *are*
+
+A finding is a statement; an entity is a thing that can be looked up again,
+pivoted from, and compared across cases. Twenty-odd typed kinds — domain, host,
+ip, asn, email, username, cert, spki, key, tracker, favicon — each with one
+canonical spelling, so a name from a certificate log and the same name from DNS
+become one node rather than two.
+
+Three rules that are easy to get wrong:
+
+- **Canonicalising never loses the original.** A hostname that arrived with a
+  trailing dot came from DNS; an email that arrived tagged tells you how the
+  address was handed out. `Entity.raw` keeps it.
+- **Confusables are a finding, not a normalisation.** `exampIe.com` with a
+  capital I is *not* `example.com`. It gets its own node and a `looks-like`
+  edge, because noticing it is the entire point.
+- **Hex folds, base64 does not.** An OpenSSH fingerprint is base64 and
+  case-significant; casefolding one would merge two unrelated identities and
+  claim somebody holds both keys.
+
+### `core/graph.py` — how strongly things connect
+
+Edges carry a log-likelihood ratio, not a label. Independent evidence adds,
+disconfirming evidence subtracts, and repeated observations *of the same kind*
+are discounted geometrically — crt.sh and CertSpotter reading the same CT log is
+one fact told twice.
+
+`EVIDENCE` is the single table of what each kind of observation is worth. It
+exists so the numbers can be argued with in one place instead of being scattered
+through fifteen modules as magic `confidence=LIKELY` calls.
+
+Two mechanisms keep transitive expansion from swallowing the internet:
+`effective_llr` divides an edge by the log of the busier endpoint's degree, so
+hubs demote themselves; and `rescore` is a widest-path search — a node's
+relevance is the strongest chain of belief back to the seed, not the shortest
+hop count.
+
+> The subtle bug, recorded so nobody reintroduces it: what propagates along an
+> edge is **transmittance**, not probability. A no-evidence edge sits at p≈0.5,
+> so propagating probability hands half the parent's relevance through a link we
+> have no reason to believe — and a one-hop guess then outranks a three-hop
+> cryptographic proof.
+
+### `core/store.py` — what was found, and proof of it
+
+SQLite for cases, entities, edges, observations, findings, per-module status and
+every request made. A content-addressed evidence store for the raw response
+bodies. A hash-chained audit log.
+
+`finding_id` deliberately excludes the value, which is what lets two scans a
+week apart agree that "mail exchangers" is the same finding so a change reads as
+a change.
+
+### `core/replay.py` — re-deriving a case offline
+
+Feeds each module its own recorded bytes with the network hard-disabled.
+`ReplayFetcher` deliberately does **not** subclass `Fetcher`: inheriting would
+make one forgotten override a live socket.
+
+### `core/opsec.py` — behaviour on the wire
+
+`SingleFlight` coalesces identical concurrent requests. `budget_key` keys rate
+limiting on the operator rather than the hostname, because api.github.com and
+raw.githubusercontent.com are one rate limit. `PassiveGuard` blocks a passive
+module from reaching the target's registrable domain at all.
+
+### `modules/correlators.py` — links without shared metadata
+
+Each correlator extracts a fingerprint, emits it as an entity, and lets the
+graph do the linking. No code anywhere compares one target to another: a
+pairwise check is quadratic and only finds what it was told to look for, while a
+shared node is linear and works across the entire case history.
+
+## Writing a module that feeds the graph
+
+`result.add(...)` still reports a fact. To make it *connect*, also say what kind
+of thing it is and what kind of evidence you have:
+
+```python
+result.entity(
+    EntityType.EMAIL, address,
+    relation="contact",            # what to call the edge
+    evidence="rdap-contact",       # a key in graph.EVIDENCE
+    url=source_url,                # where it came from
+    detail="RDAP registrant contact",
+)
+```
+
+The engine turns that into a weighted edge, so a module never has to know about
+log-odds or hub demotion — it says what it saw and the scoring layer decides what
+that is worth. Modules still calling `result.pivot()` keep working; their pivots
+become nodes on a deliberately weaker `pivot-derived` edge, so migrating is
+rewarded rather than required.
+
+Two rules worth stating outright:
+
+1. **Only claim what you can attribute.** If a source hands you addresses from
+   several people, emit the target's own with real evidence and the rest as
+   contributors at `mentioned`. A co-contributor's address asserted as the
+   target's is a false identity in a report, and it is the single easiest
+   mistake to make here.
+2. **Declare `active = True` if you touch the target's own infrastructure.** The
+   passive guard will stop you anyway, but it will stop you by reporting a
+   coverage gap, which is a worse outcome than the flag being right.
+
 ## Adding a new OSINT module
 
 Two steps, no central switchboard to edit beyond one import.

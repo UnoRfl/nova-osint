@@ -152,9 +152,17 @@ with and a UTC offset on every timestamp — so NOVA reports the email addresses
 behind the account and infers a timezone from the distribution of recent commit
 offsets, with the distribution shown so you can judge it yourself.
 
-**3. Passive actually means passive.** `--passive` does not just "go quieter".
-It disables every module that would send a packet to infrastructure the target
-controls. What is left queries only third parties, so the target sees nothing.
+**3. Passive actually means passive, and is enforced.** `--passive` does not
+just "go quieter". It disables every module that would send a packet to
+infrastructure the target controls — and then a guard *blocks* any remaining
+module from reaching the target's domain anyway, so a mislabelled module is
+stopped rather than trusted. A promise a tool cannot check is not worth making.
+
+**3b. Things are linked by shared fingerprints, not by guesswork.** Two sites
+carrying the same Google Analytics property, two handles holding the same SSH
+key, two hosts serving the same favicon: each becomes a node both sides point
+at, so the connection is found without any code comparing A to B, and the reason
+is visible in the report.
 
 **4. A refusal is reported, not hidden.** NOVA identifies itself honestly in
 every request (`NOVA-OSINT/1.1.0`), respects `Retry-After`, and makes no attempt
@@ -175,7 +183,8 @@ badly wrong.
 
 ## Output
 
-Five formats: `console` (the default), `json`, `csv`, `markdown`, `html`.
+Seven formats: `console` (the default), `json`, `csv`, `markdown`, `html`,
+`graph` (an interactive page) and `graphml` (for Gephi / yEd / Cytoscape).
 
 ```bash
 nova scan example.com --format html --output report.html   # standalone, dark-mode aware
@@ -188,19 +197,149 @@ Every finding carries a **source**, a **confidence** (`confirmed` / `likely` /
 interest, not vulnerability severity). `--min-severity notable` cuts the noise
 on a big scan. See [`examples/`](examples/) for a real report.
 
-## Pivoting
+## Following the connections
 
-Modules emit *pivots*: new targets found mid-scan. A domain scan surfaces its
-IPs, its RDAP contacts and its subdomains; an email scan surfaces the usernames
-it might correspond to; a GitHub scan surfaces the addresses in commit metadata.
+A scan answers "what is true about this target". `--expand` answers the harder
+question: *and what is connected to that, and to that*.
 
 ```bash
-nova scan example.com --pivot --pivot-limit 5
+nova scan example.com --expand                 # sensible default budget
+nova scan example.com --expand --budget deep   # go further
+nova scan alice@example.com --expand --depth 3 --max-entities 80
 ```
 
-That scans up to five discovered targets one level deep and folds the results
-into the same report. It is deliberately one level: automatic recursion turns
-into a crawl of the internet very quickly.
+Each round rescores the graph, takes the best-evidenced entities nobody has
+looked at yet, runs the modules that accept them, and feeds what they find back
+in — so what round two discovers changes what round three thinks is worth doing.
+
+The reason most tools do not do this is that it explodes. A domain resolves to a
+Cloudflare address that answers for four million other names, and two hops later
+the graph is the internet and the target is gone. Three things stop that:
+
+- **Evidence is weighted in log-odds.** A shared SSH key is +7.5; a handle
+  guessed from an email local part is +0.3. Independent evidence adds,
+  disconfirming evidence subtracts, and a control-handle match that proves a
+  site says yes to everyone is −3.0.
+- **Hubs demote themselves.** An edge through a node is divided by the log of
+  that node's degree, so shared infrastructure loses its pull *as the scan
+  discovers how big it is*. No hand-maintained list of things to ignore.
+- **Relevance is a widest path, not a hop count.** A two-hop chain of
+  cryptographic proof outranks a one-hop string match, so the request budget
+  goes to the best-evidenced part of the graph first.
+
+Four budget limits bound the walk — depth, evidence quality, entity count and
+wall clock — and the report says which one stopped it and which leads it never
+reached. A truncated investigation that does not admit it was truncated is the
+same failure as a blocked source reported as an empty result.
+
+`--pivot` still exists and still does one flat level, for when that is all you
+want.
+
+## Seeing it
+
+```bash
+nova scan example.com --expand --format graph --output graph.html
+nova scan example.com --format graphml --output graph.graphml   # Gephi, yEd
+```
+
+The graph page is self-contained: the force-directed layout is about a hundred
+lines of plain JavaScript, with no CDN, so it still works offline and attached
+to a case file. Node radius is relevance to the target. Edge thickness is the
+strength of the evidence — click any node and the panel tells you *why* it is
+connected, with the Admiralty grade, the specific observations, the source URL
+and the sha256 of the stored response.
+
+The text reports carry the same thing:
+
+```
+how the pieces connect
+ grade  connected to                   how          evidence                reading
+ A3     ssh/SHA256:SlSdsTYgtT3jhz1Q…   holds-key    key-fingerprint-shared  near certain
+ B3     torvalds@linux-foundation.org  commits-as   commit-email            probable
+ D3     djwong@kernel.org              contributes  mentioned               weakly suggestive
+
+ grades are Admiralty: letter = strength of the evidence (A best, E
+ disconfirming), digit = independent corroboration (1 most, 5 none)
+```
+
+Source reliability and corroboration are separate letters on purpose. Collapsing
+them into one "confidence" is how a rumour ends up presented with the authority
+of a registry record.
+
+## Cases: history, diffs and proof
+
+Every scan is recorded unless you pass `--no-save`.
+
+```bash
+nova history                       # what you have scanned
+nova show 20260917-2026            # one case, by id or unambiguous prefix
+nova diff example.com              # what changed between the last two runs
+nova link <case-a> <case-b>        # entities two investigations share
+nova where alice@example.com       # which cases have ever seen this
+```
+
+`diff` is the feature that makes the tool worth running twice: a new subdomain,
+a changed MX, a handle that now exists. Findings are keyed so a changed value
+reads as *changed* rather than as an unexplained removal beside an unexplained
+addition — and a module that went dark between runs is reported as a **coverage**
+change first, because it reframes every removal underneath it.
+
+### Proving a result
+
+Every response body is stored, sha256-addressed and compressed, next to the
+case. A finding can be traced to the exact bytes it was parsed from, months
+later, after the source has changed its mind or disappeared.
+
+```bash
+nova replay <case>          # re-derive the findings from stored evidence, no network
+nova evidence <case>        # re-hash every blob, verify the audit chain
+nova evidence --digest <sha256>   # print one stored response
+```
+
+`replay` hard-disables the network. A URL with no recording comes back as an
+explicit miss and is counted, so *reproduced exactly* means exactly that:
+
+```
+  modules re-run      3
+  responses served    27  (100% of requests)
+  findings then/now   19 / 19
+
+  reproduced exactly.
+```
+
+That also makes every saved case a free regression test. A parser that quietly
+stops reading a field shows up as drift against real captured bytes rather than
+against a hand-written fixture containing only what its author thought of.
+
+The audit log is hash-chained, so an edited or deleted entry breaks the chain at
+a line `nova evidence` will name.
+
+### Before you scan
+
+```bash
+nova doctor                 # can this machine actually reach each source?
+nova doctor --keyless       # skip the ones needing an API key
+nova doctor --leak-check --proxy socks5h://127.0.0.1:9050
+```
+
+`doctor` separates *reachable*, *refused us*, *rate limited* and *needs a key
+you do not have*. Those four produce an identical empty section in a report and
+mean four different things; knowing which before a fifteen-minute scan beats
+finding out after. `--leak-check` compares the address the direct and proxied
+routes present — a proxy that silently is not carrying your traffic looks
+identical from the inside.
+
+## Sharing a report
+
+```bash
+nova scan alice@example.com --redact --format html --output share.html
+```
+
+`--redact` masks emails, handles and phone numbers **in the output**; the case
+store keeps the real values, because an investigation that loses its own data is
+useless. Masking is consistent within a document, so two accounts sharing an
+address still visibly share it, and salted so tokens are not comparable between
+reports unless you pass the same `--redact-salt` deliberately.
 
 ## Options worth knowing
 

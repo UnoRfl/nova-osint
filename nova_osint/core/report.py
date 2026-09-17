@@ -86,6 +86,43 @@ def _flatten(value: Any, limit: int = 12) -> str:
 # ----------------------------------------------------------------------- console
 
 
+def connection_rows(inv: Investigation, limit: int = 25
+                    ) -> list[tuple[str, str, str, str, str]]:
+    """``[(grade, entity, relation, why, reading)]``, best-evidenced first.
+
+    The report's answer to "how do you know these are connected". Every row
+    carries the Admiralty grade, the specific observations behind it, and a
+    plain-English reading of the number - because a log-odds figure is precise
+    and meaningless to anyone who has not read graph.py, and a report that only
+    shows the precise version is not actually telling the reader anything.
+    """
+    graph = inv.graph
+    if graph is None or not graph.edges:
+        return []
+    from .graphview import probability_note
+
+    rows = []
+    for edge in sorted(graph.edges.values(), key=lambda e: -e.llr):
+        if len(rows) >= limit:
+            break
+        far = edge.dst if edge.src == graph.seed else edge.src
+        node = graph.nodes.get(far)
+        label = node.entity.display if node else far
+        why = ", ".join(sorted({o.kind for o in edge.observations}))
+        rows.append((edge.grade, f"{label}", edge.label, why,
+                     probability_note(edge.llr)))
+    return rows
+
+
+#: What the two halves of an Admiralty grade mean, printed once per report so
+#: nobody has to look it up. Source reliability and information credibility are
+#: separate axes on purpose: collapsing them is how a rumour ends up presented
+#: with the confidence of a registry record.
+ADMIRALTY_KEY = ("grades are Admiralty: letter = strength of the evidence "
+                 "(A best, E disconfirming), digit = independent corroboration "
+                 "(1 most, 5 none)")
+
+
 def render_console(inv: Investigation, *, verbose: bool = False,
                    min_severity: Severity = Severity.INFO) -> str:
     order = {Severity.INFO: 0, Severity.NOTABLE: 1, Severity.HIGH: 2}
@@ -166,6 +203,30 @@ def render_console(inv: Investigation, *, verbose: bool = False,
                   border_style="yellow", box=box.ROUNDED)
         )
 
+    links = connection_rows(inv)
+    if links:
+        lt = Table(box=box.SIMPLE, show_header=True, header_style="bold green",
+                   expand=True, pad_edge=False)
+        lt.add_column("grade", max_width=6)
+        lt.add_column("connected to")
+        lt.add_column("how", max_width=18)
+        lt.add_column("evidence", style="dim")
+        lt.add_column("reading", style="dim", max_width=22)
+        for grade, label, relation, why, reading in links:
+            colour = ("bold green" if grade[0] == "A" else
+                      "green" if grade[0] == "B" else
+                      "yellow" if grade[0] == "C" else
+                      "red" if grade[0] == "E" else "white")
+            lt.add_row(f"[{colour}]{grade}[/]", label, relation, why, reading)
+        console.print(
+            Panel(lt, title="[bold]how the pieces connect[/bold]",
+                  border_style="green", box=box.ROUNDED)
+        )
+        # On its own line, not as the panel's subtitle: rich truncates a
+        # subtitle to the border width and a legend cut off mid-word
+        # ("...independent corroborat") is worse than no legend.
+        console.print(f"  [dim]{ADMIRALTY_KEY}[/dim]")
+
     if inv.pivots:
         p = Table(box=box.SIMPLE, show_header=True, header_style="bold magenta", expand=True)
         p.add_column("pivot")
@@ -207,6 +268,12 @@ def _render_plain(inv: Investigation, floor: int, order: dict, verbose: bool) ->
         out.append("\n[instrument status]")
         for name, status, reason in rows:
             out.append(f"  {name}: {status}{' - ' + reason if reason else ''}")
+    links = connection_rows(inv)
+    if links:
+        out.append("\n[how the pieces connect]")
+        for grade, label, relation, why, reading in links:
+            out.append(f"  {grade}  {label}  ({relation}; {why}) - {reading}")
+        out.append(f"  {ADMIRALTY_KEY}")
     if inv.pivots:
         out.append("\n[pivots]")
         for p in inv.pivots[:40]:
@@ -281,6 +348,19 @@ def render_markdown(inv: Investigation) -> str:
             "|---|---|---|",
         ]
         out += [f"| {name} | {status} | {reason or '-'} |" for name, status, reason in rows]
+        out.append("")
+    links = connection_rows(inv)
+    if links:
+        out += [
+            "### How the pieces connect",
+            "",
+            f"Each row is a link the scan drew, and why. {ADMIRALTY_KEY.capitalize()}.",
+            "",
+            "| Grade | Connected to | How | Evidence | Reading |",
+            "|---|---|---|---|---|",
+        ]
+        out += [f"| `{grade}` | {label} | {relation} | {why} | {reading} |"
+                for grade, label, relation, why, reading in links]
         out.append("")
     high = [f for f in inv.findings if f.severity == Severity.HIGH]
     if high:
@@ -375,6 +455,21 @@ def render_html(inv: Investigation) -> str:
         "<span>coverage gaps</span></div>",
         "</div>",
     ]
+    links = connection_rows(inv)
+    if links:
+        parts.append(
+            "<section><h2>How the pieces connect"
+            f"<em>{e(ADMIRALTY_KEY)}</em></h2>"
+            "<table><thead><tr><th>Grade</th><th>Connected to</th><th>How</th>"
+            "<th>Evidence</th><th>Reading</th></tr></thead><tbody>"
+        )
+        for grade, label, relation, why, reading in links:
+            parts.append(
+                f"<tr><td><code>{e(grade)}</code></td><td>{e(label)}</td>"
+                f"<td>{e(relation)}</td><td>{e(why)}</td><td>{e(reading)}</td></tr>"
+            )
+        parts.append("</tbody></table></section>")
+
     gaps = status_rows(inv)
     if gaps:
         parts.append(

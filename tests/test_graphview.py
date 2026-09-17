@@ -260,3 +260,50 @@ def test_every_renderer_survives_an_investigation_with_a_graph():
 ])
 def test_probability_note_reads_as_english(llr, expected):
     assert expected in probability_note(llr)
+
+
+# ---------------------------------------------------------------------------
+# graded connections in the text reports
+# ---------------------------------------------------------------------------
+
+
+def test_connection_rows_are_ordered_by_evidence_strength():
+    from nova_osint.core.report import connection_rows
+
+    rows = connection_rows(_investigation())
+    grades = [r[0] for r in rows]
+    assert grades == sorted(grades), "strongest evidence must come first"
+    assert rows[0][0].startswith("B")
+
+
+def test_connection_rows_name_the_evidence_and_read_it_in_english():
+    """A log-odds figure is precise and meaningless to most readers."""
+    from nova_osint.core.report import connection_rows
+
+    rows = {r[1]: r for r in connection_rows(_investigation())}
+    grade, label, relation, why, reading = rows["alice@example.com"]
+    assert relation == "contact" and why == "rdap-contact"
+    assert reading in ("near certain", "probable", "more likely than not",
+                       "weakly suggestive", "no support, or evidence against")
+
+
+def test_a_graphless_investigation_has_no_connection_rows():
+    from nova_osint.core.report import connection_rows
+
+    inv = Investigation(target="x.test", target_type=TargetType.DOMAIN).finish()
+    assert connection_rows(inv) == []
+
+
+@pytest.mark.parametrize("fmt", ["console", "markdown", "html"])
+def test_every_text_report_shows_how_the_pieces_connect(fmt):
+    out = RENDERERS[fmt](_investigation())
+    assert "connect" in out.lower(), f"{fmt} hides the link analysis"
+    assert "alice@example.com" in out
+
+
+@pytest.mark.parametrize("fmt", ["console", "markdown", "html"])
+def test_every_text_report_explains_the_admiralty_grade(fmt):
+    """A grade nobody can read is decoration."""
+    out = RENDERERS[fmt](_investigation())
+    assert "Admiralty" in out or "admiralty" in out
+    assert "corroboration" in out

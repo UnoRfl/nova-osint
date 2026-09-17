@@ -62,15 +62,24 @@ def build_parser() -> argparse.ArgumentParser:
         description="NOVA - all-in-one OSINT collection across public sources.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""examples:
+  nova doctor                                  can this machine reach the sources?
   nova scan example.com
-  nova scan alice@example.com --format html --output report.html
-  nova scan someuser --only username
-  nova scan 8.8.8.8 --pivot
+  nova scan example.com --expand               follow what it connects to
+  nova scan example.com --expand -f graph -o graph.html
+  nova scan alice@example.com --redact -f html -o share.html
+  nova scan someuser --only username,keys,keybase
   nova scan example.com --passive --quiet --format json
-  nova scan example.com -vv --log-file scan.log
+
+  nova history                                 every saved case
+  nova diff example.com                        what changed since last time
+  nova show <case>                             one case in full
+  nova link <case-a> <case-b>                  what two investigations share
+  nova where alice@example.com                 which cases have seen this
+  nova replay <case>                           re-derive it from stored evidence
+  nova evidence <case>                         verify that evidence still hashes
+
   nova modules
   nova config show
-  nova art
 """,
     )
     sub = p.add_subparsers(dest="command")
