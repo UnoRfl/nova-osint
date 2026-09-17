@@ -236,6 +236,53 @@ def _mark(verdict: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# phone
+# ---------------------------------------------------------------------------
+
+
+def cmd_phone(args: argparse.Namespace, cfg: Config, store: Any = None) -> int:
+    """One number in, one card out.
+
+    A thin command on purpose: it runs the ordinary phone module, then asks the
+    case store whether this number has been seen before, and renders the two
+    together. The lookup against the operator's own history is the part a
+    caller-ID app cannot do and the part that is actually theirs.
+    """
+    from .core.engine import Engine
+    from .core.models import TargetType
+    from .core.phonecard import build, render_json, render_text
+
+    with Engine(cfg) as engine:
+        inv = engine.scan(args.number, target_type=TargetType.PHONE)
+    card = build(inv, store)
+    if store is not None:
+        # The lookup itself is not saved as a case - a card is not an
+        # investigation, and filing one would make every future lookup report
+        # "seen before: the time you looked it up". It does go in the audit
+        # chain, because what this tool was pointed at is exactly what that log
+        # is for.
+        try:
+            store.audit.append("phone-lookup", number=card.formats.get(
+                "E.164", args.number), verdict=card.verdict, risk=card.risk)
+        except Exception as exc:  # noqa: BLE001 - never lose the card over a log
+            log.warning("could not record the lookup: %s", exc)
+
+    if args.format == "json":
+        print(render_json(card))
+    else:
+        sys.stdout.write(render_text(card))
+
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(
+            render_json(card) if args.format == "json" else render_text(card), "utf-8")
+        print(f"wrote {args.output}", file=sys.stderr)
+    # A number that does not exist is a real answer, so it is a success. Only a
+    # parse that produced nothing at all counts as finding nothing.
+    return EXIT_OK if card.verdict else EXIT_NO_FINDINGS
+
+
+# ---------------------------------------------------------------------------
 # history / show
 # ---------------------------------------------------------------------------
 
@@ -540,6 +587,6 @@ def elapsed(started: float) -> str:
 
 __all__ = [
     "PROBES", "cmd_diff", "cmd_doctor", "cmd_evidence", "cmd_history", "cmd_link",
-    "cmd_replay", "cmd_show", "cmd_where", "open_store", "reporting",
+    "cmd_phone", "cmd_replay", "cmd_show", "cmd_where", "open_store", "reporting",
     "summarise_for_terminal",
 ]

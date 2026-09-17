@@ -547,7 +547,16 @@ RENDERERS = {
     "profile": lambda inv: _profile("text", inv),
     "profile-html": lambda inv: _profile("html", inv),
     "profile-json": lambda inv: _profile("json", inv),
+    #: The phone answer card. Useful from `nova scan` too, so a phone number
+    #: inside a larger pipeline renders the same way `nova phone` shows it.
+    "card": lambda inv: _card(inv),
 }
+
+
+def _card(inv: Investigation) -> str:
+    from .phonecard import build, render_text
+
+    return render_text(build(inv))
 
 
 def _profile(kind: str, inv: Investigation) -> str:

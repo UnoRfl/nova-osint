@@ -67,6 +67,8 @@ def build_parser() -> argparse.ArgumentParser:
   nova scan example.com --expand               follow what it connects to
   nova scan example.com --expand -f graph -o graph.html
   nova scan alice@example.com --redact -f html -o share.html
+  nova phone "+44 20 7946 0958"                 caller-ID style card
+  nova scan "Ada Lovelace"                     search by name
   nova scan someuser --only username,keys,keybase
   nova scan example.com --passive --quiet --format json
 
@@ -179,6 +181,12 @@ def build_parser() -> argparse.ArgumentParser:
     evi.add_argument("case", nargs="?", help="limit the check to one case")
     evi.add_argument("--digest", help="print this blob to stdout instead")
     _common(evi)
+
+    ph = sub.add_parser("phone", help="identify one phone number, caller-ID style")
+    ph.add_argument("number", help="the number, ideally in +CC... form")
+    ph.add_argument("-f", "--format", choices=["card", "json"], default="card")
+    ph.add_argument("-o", "--output", type=Path, help="also write the card here")
+    _common(ph)
 
     doc = sub.add_parser("doctor", help="probe every source from this machine")
     doc.add_argument("--keyless", action="store_true",
@@ -524,7 +532,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
 #: Subcommands that read the case store and nothing else.
 _CASE_COMMANDS = frozenset({"history", "show", "diff", "link", "where", "replay",
-                            "evidence"})
+                            "evidence", "phone"})
 
 
 def _run_case_command(args: argparse.Namespace) -> int:
@@ -563,6 +571,10 @@ def _run_case_command(args: argparse.Namespace) -> int:
             return commands.cmd_replay(args, store, cfg)
         if args.command == "evidence":
             return commands.cmd_evidence(args, store)
+        if args.command == "phone":
+            # Handed the store so the card can say whether this number has
+            # turned up in an earlier case.
+            return commands.cmd_phone(args, cfg, store)
     finally:
         store.close()
     return EXIT_USAGE
