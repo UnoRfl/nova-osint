@@ -2,11 +2,13 @@
 
 from .core.config import Config
 from .core.engine import Engine
+from .core.http import VERSION as __version__
 from .core.models import Confidence, Finding, Investigation, ScanResult, Severity, TargetType
 from .core.registry import all_modules, detect_type
 
-__version__ = "1.0.0"
+#: One version string for the package, the User-Agent and the frozen build.
 __all__ = [
+    "__version__",
     "Config",
     "Engine",
     "Investigation",

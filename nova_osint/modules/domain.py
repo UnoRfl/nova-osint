@@ -230,12 +230,46 @@ class MailPostureModule(Module):
             lambda s: (s, dnsmod.resolve(self.http, f"{s}._domainkey.{domain}", "TXT")),
             self.SELECTORS,
         )
-        selectors = [s for pair in found if pair for s, recs in [pair] if recs]
-        if selectors:
-            result.add("DKIM selectors", selectors, source="doh")
+        live, revoked = _split_dkim(found)
+        if live:
+            result.add("DKIM selectors", live, source="doh")
+        if revoked:
+            # A record that exists but carries an empty p= tag is the RFC 6376
+            # way of saying "this key is revoked". Counting it as a working
+            # selector is a false positive, and some domains (example.com among
+            # them) answer every selector this way.
+            result.add(
+                "DKIM selectors with no key",
+                revoked,
+                source="doh",
+                severity=Severity.NOTABLE,
+                extra={"note": "v=DKIM1 with an empty p= tag means the key is revoked "
+                               "(RFC 6376 section 3.6.1), not that DKIM is in use"},
+            )
 
         if bimi := dnsmod.resolve(self.http, f"default._bimi.{domain}", "TXT"):
             result.add("BIMI", bimi[0], source="doh")
+
+
+def _split_dkim(pairs: list[tuple[str, list[str]] | None]) -> tuple[list[str], list[str]]:
+    """Sort probed selectors into ``(has a key, exists but revoked)``.
+
+    A selector only counts as live when its record carries a non-empty ``p=``
+    public key. Everything else either does not exist or explicitly says the
+    key is gone.
+    """
+    live: list[str] = []
+    revoked: list[str] = []
+    for pair in pairs:
+        if not pair:
+            continue
+        selector, records = pair
+        record = next((r for r in records if "v=dkim1" in r.lower()), None)
+        if record is None:
+            continue
+        key = re.search(r"\bp=\s*([A-Za-z0-9+/=]*)", record)
+        (live if key and key.group(1) else revoked).append(selector)
+    return live, revoked
 
 
 def _guess_provider(mx_hosts: list[str]) -> str:

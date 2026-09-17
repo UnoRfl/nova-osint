@@ -7,10 +7,16 @@
 *.key
 *.pem
 secrets.json
+# config.json may hold API keys (core/config.py: api_keys block)
+config.json
+nova-config.json
 
 # scan output: reports contain data about real people and infrastructure
 reports/
 out/
+output/
+*.osint.log
+nova*.log
 *.osint.json
 *.osint.html
 

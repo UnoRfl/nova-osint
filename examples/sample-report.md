@@ -1,8 +1,30 @@
 # OSINT report: `scanme.nmap.org`
 
 - **Type:** domain
-- **Generated:** 2026-09-17 10:31:47 Malay Peninsula Standard Time
-- **Modules:** 9  |  **Findings:** 49  |  **Errors:** 1
+- **Generated:** 2026-09-17 15:07:59 Malay Peninsula Standard Time
+- **Scan duration:** 19.8s
+
+## Summary
+
+| | Count |
+|---|---|
+| Findings | 49 |
+| Confirmed (authoritative source) | 49 |
+| Likely (strong heuristic) | 0 |
+| Possible (weak or ambiguous) | 0 |
+| Modules run | 9 |
+| Modules incomplete | 3 |
+| Modules skipped | 0 |
+
+### Coverage gaps
+
+Everything below either did not run or did not finish. Treat the absence of findings from these sources as *unknown*, not as *none*.
+
+| Module | Status | Reason |
+|---|---|---|
+| exposed | partial | 1 source request(s) came back 'unavailable' |
+| headers | partial | 1 source request(s) came back 'access denied' |
+| subdomains | partial | crt.sh unavailable |
 
 ## Highlights
 
@@ -52,7 +74,7 @@
 |  | github code: database strings | ["scanme.nmap.org" (jdbc OR mongodb+srv OR postgres://)](https://github.com/search?type=code&q=%22scanme.nmap.org%22%20%28jdbc%20OR%20mongodb%2Bsrv%20OR%20postgres%3A//%29) | dorks |
 
 
-## headers
+## headers — partial
 
 | | Field | Value | Source |
 |---|---|---|---|
@@ -73,7 +95,7 @@
 | !! | DMARC | missing | doh |
 
 
-## subdomains
+## subdomains — partial
 
 | | Field | Value | Source |
 |---|---|---|---|
@@ -100,9 +122,9 @@
 |---|---|---|---|
 |  | registrable domain | nmap.org | rdap |
 |  | domain | nmap.org | rdap |
-|  | expires | 2029-01-18 (855 days from now) | rdap |
-|  | registered | 1999-01-18 (10103 days ago) | rdap |
-|  | last changed | 2026-08-12 (35 days ago) | rdap |
+|  | expires | 2029-01-18 (854 days from now) | rdap |
+|  | registered | 1999-01-18 (10104 days ago) | rdap |
+|  | last changed | 2026-08-12 (36 days ago) | rdap |
 |  | status | client transfer prohibited | rdap |
 |  | entity (registrar) | Dynadot Inc | rdap |
 |  | nameservers | ns1.linode.com, ns2.linode.com, ns3.linode.com, ns4.linode.com, ns5.linode.com | rdap |

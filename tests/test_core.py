@@ -207,7 +207,10 @@ def test_pivots_are_deduplicated() -> None:
 
 def test_investigation_serialises() -> None:
     payload = json.loads(json.dumps(_sample().to_dict()))
-    assert payload["summary"] == {"modules_run": 1, "findings": 3, "pivots": 1, "errors": 1}
+    assert payload["summary"] == {
+        "modules_run": 1, "findings": 3, "pivots": 1, "errors": 1,
+        "incomplete": 0, "skipped": 0,
+    }
     assert payload["results"][0]["findings"][1]["severity"] == "high"
 
 

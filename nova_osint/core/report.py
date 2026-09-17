@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from . import art
-from .models import Confidence, Investigation, Severity
+from .models import Confidence, Investigation, ModuleStatus, Severity
 
 try:
     from rich import box
@@ -35,6 +35,44 @@ CONF_COLOR = {
     Confidence.LIKELY: "cyan",
     Confidence.POSSIBLE: "dim",
 }
+STATUS_COLOR = {
+    ModuleStatus.SUCCESS: "green",
+    ModuleStatus.EMPTY: "dim",
+    ModuleStatus.PARTIAL: "yellow",
+    ModuleStatus.RATE_LIMITED: "yellow",
+    ModuleStatus.BLOCKED: "red",
+    ModuleStatus.UNAVAILABLE: "red",
+    ModuleStatus.FAILED: "bold red",
+    ModuleStatus.SKIPPED: "dim",
+}
+
+
+def confidence_counts(inv: Investigation) -> dict[str, int]:
+    """How much of this report is verified, in one dict.
+
+    An investigator reads the summary before the tables; "31 findings" means
+    nothing without knowing how many of them are a registry answer and how many
+    are a heuristic guess.
+    """
+    counts = dict.fromkeys((c.value for c in Confidence), 0)
+    for f in inv.findings:
+        counts[f.confidence.value] += 1
+    return counts
+
+
+def status_rows(inv: Investigation) -> list[tuple[str, str, str]]:
+    """``[(module, status, reason)]`` for every module that did not run cleanly.
+
+    Skipped modules are included: "we never asked" is as important to an
+    investigator as "we asked and got nothing".
+    """
+    rows = [
+        (r.module, r.status.value, r.status_reason)
+        for r in inv.results
+        if not r.status.is_complete
+    ]
+    rows += [(name, ModuleStatus.SKIPPED.value, reason) for name, reason in inv.skipped]
+    return sorted(rows)
 
 
 def _flatten(value: Any, limit: int = 12) -> str:
@@ -59,12 +97,16 @@ def render_console(inv: Investigation, *, verbose: bool = False,
     buf = io.StringIO()
     console = Console(file=buf, width=118, force_terminal=True)
     summary = inv.to_dict()["summary"]
+    conf = confidence_counts(inv)
     console.print(
         Panel(
             f"[bold]{inv.target}[/bold]  [dim]({inv.target_type.value})[/dim]\n"
             f"{summary['findings']} findings from {summary['modules_run']} instruments  "
-            f"in {inv.to_dict()['duration']}s  "
-            f"[dim]{summary['pivots']} bodies in orbit, {summary['errors']} errors[/dim]",
+            f"in {inv.duration:.1f}s\n"
+            f"[dim]{conf['confirmed']} confirmed, {conf['likely']} likely, "
+            f"{conf['possible']} possible[/dim]\n"
+            f"[dim]{summary['pivots']} bodies in orbit, {summary['incomplete']} incomplete, "
+            f"{summary['skipped']} skipped[/dim]",
             title="[bold]◉ NOVA[/bold]",
             border_style=art.NEBULA[0],
             box=box.ROUNDED,
@@ -108,6 +150,22 @@ def render_console(inv: Investigation, *, verbose: bool = False,
             console.print(f"  [yellow]warn[/yellow] [dim]{res.module}:[/dim] {err}")
         console.print()
 
+    rows = status_rows(inv)
+    if rows:
+        # The most important table in a long scan: it is the difference between
+        # "there was nothing to find" and "we never got to look".
+        st = Table(box=box.SIMPLE, show_header=True, header_style="bold yellow", expand=True)
+        st.add_column("instrument", width=16, no_wrap=True)
+        st.add_column("status", width=14, no_wrap=True)
+        st.add_column("reason", style="dim", overflow="fold")
+        for name, status, reason in rows:
+            colour = STATUS_COLOR.get(ModuleStatus(status), "white")
+            st.add_row(name, f"[{colour}]{status}[/]", reason or "-")
+        console.print(
+            Panel(st, title="[bold]instruments that did not report cleanly[/bold]",
+                  border_style="yellow", box=box.ROUNDED)
+        )
+
     if inv.pivots:
         p = Table(box=box.SIMPLE, show_header=True, header_style="bold magenta", expand=True)
         p.add_column("pivot")
@@ -129,6 +187,9 @@ def _render_plain(inv: Investigation, floor: int, order: dict, verbose: bool) ->
     out.append("=" * 78)
     out.append(f"  {inv.target}  ({inv.target_type.value})")
     out.append(f"  {s['findings']} findings / {s['modules_run']} modules / {s['errors']} errors")
+    conf = confidence_counts(inv)
+    out.append(f"  confirmed {conf['confirmed']} / likely {conf['likely']} "
+               f"/ possible {conf['possible']}")
     out.append("=" * 78)
     for res in inv.results:
         shown = [f for f in res.findings if order[f.severity] >= floor]
@@ -141,6 +202,11 @@ def _render_plain(inv: Investigation, floor: int, order: dict, verbose: bool) ->
                 out.append(f"       {f.url}")
         for err in res.errors:
             out.append(f"  warn: {err}")
+    rows = status_rows(inv)
+    if rows:
+        out.append("\n[instrument status]")
+        for name, status, reason in rows:
+            out.append(f"  {name}: {status}{' - ' + reason if reason else ''}")
     if inv.pivots:
         out.append("\n[pivots]")
         for p in inv.pivots[:40]:
@@ -162,27 +228,60 @@ def render_json(inv: Investigation, pivots: Iterable[Investigation] = ()) -> str
 def render_csv(inv: Investigation) -> str:
     buf = io.StringIO()
     w = csv.writer(buf, lineterminator="\n")
-    w.writerow(["target", "target_type", "module", "severity", "confidence",
-                "label", "value", "source", "url"])
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(inv.started_at))
+    w.writerow(["target", "target_type", "module", "module_status", "severity",
+                "confidence", "label", "value", "source", "url", "timestamp"])
     for res in inv.results:
         for f in res.findings:
-            w.writerow([inv.target, inv.target_type.value, res.module, f.severity.value,
-                        f.confidence.value, f.label, _flatten(f.value, 999), f.source,
-                        f.url or ""])
+            w.writerow([inv.target, inv.target_type.value, res.module, res.status.value,
+                        f.severity.value, f.confidence.value, f.label,
+                        _flatten(f.value, 999), f.source, f.url or "", stamp])
+    # Modules that never ran, or ran badly, get a row of their own: a CSV that
+    # silently omits them reads as "we checked and there was nothing there".
+    for name, status, reason in status_rows(inv):
+        if any(r.module == name and r.findings for r in inv.results):
+            continue
+        w.writerow([inv.target, inv.target_type.value, name, status, Severity.INFO.value,
+                    "", "module status", reason, "nova", "", stamp])
     return buf.getvalue()
 
 
 def render_markdown(inv: Investigation) -> str:
     s = inv.to_dict()["summary"]
+    conf = confidence_counts(inv)
     out = [
         f"# OSINT report: `{inv.target}`",
         "",
         f"- **Type:** {inv.target_type.value}",
         f"- **Generated:** {time.strftime('%Y-%m-%d %H:%M:%S %Z')}",
-        f"- **Modules:** {s['modules_run']}  |  **Findings:** {s['findings']}  "
-        f"|  **Errors:** {s['errors']}",
+        f"- **Scan duration:** {inv.duration:.1f}s",
+        "",
+        "## Summary",
+        "",
+        "| | Count |",
+        "|---|---|",
+        f"| Findings | {s['findings']} |",
+        f"| Confirmed (authoritative source) | {conf['confirmed']} |",
+        f"| Likely (strong heuristic) | {conf['likely']} |",
+        f"| Possible (weak or ambiguous) | {conf['possible']} |",
+        f"| Modules run | {s['modules_run']} |",
+        f"| Modules incomplete | {s['incomplete']} |",
+        f"| Modules skipped | {s['skipped']} |",
         "",
     ]
+    rows = status_rows(inv)
+    if rows:
+        out += [
+            "### Coverage gaps",
+            "",
+            "Everything below either did not run or did not finish. Treat the "
+            "absence of findings from these sources as *unknown*, not as *none*.",
+            "",
+            "| Module | Status | Reason |",
+            "|---|---|---|",
+        ]
+        out += [f"| {name} | {status} | {reason or '-'} |" for name, status, reason in rows]
+        out.append("")
     high = [f for f in inv.findings if f.severity == Severity.HIGH]
     if high:
         out += ["## Highlights", ""]
@@ -193,7 +292,10 @@ def render_markdown(inv: Investigation) -> str:
     for res in inv.results:
         if not res.findings and not res.errors:
             continue
-        out += [f"## {res.module}", "", "| | Field | Value | Source |", "|---|---|---|---|"]
+        heading = f"## {res.module}"
+        if not res.status.is_complete:
+            heading += f" — {res.status.value}"
+        out += [heading, "", "| | Field | Value | Source |", "|---|---|---|---|"]
         for f in res.findings:
             mark = {Severity.HIGH: "!!", Severity.NOTABLE: "*", Severity.INFO: ""}[f.severity]
             value = _flatten(f.value, 20).replace("|", "\\|")
@@ -262,15 +364,29 @@ def render_html(inv: Investigation) -> str:
         "<div class='wrap'>",
         f"<h1>OSINT report &middot; <code>{e(inv.target)}</code></h1>",
         f"<div class='sub'>{e(inv.target_type.value)} &middot; generated "
-        f"{time.strftime('%Y-%m-%d %H:%M')} &middot; {inv.to_dict()['duration']}s</div>",
+        f"{time.strftime('%Y-%m-%d %H:%M')} &middot; {inv.duration:.1f}s</div>",
         "<div class='cards'>",
         f"<div class='card'><b>{s['findings']}</b><span>findings</span></div>",
         f"<div class='card'><b>{s['modules_run']}</b><span>modules</span></div>",
         f"<div class='card'><b>{len([f for f in inv.findings if f.severity == Severity.HIGH])}"
         "</b><span>high interest</span></div>",
         f"<div class='card'><b>{s['pivots']}</b><span>pivots</span></div>",
+        f"<div class='card'><b>{s['incomplete'] + s['skipped']}</b>"
+        "<span>coverage gaps</span></div>",
         "</div>",
     ]
+    gaps = status_rows(inv)
+    if gaps:
+        parts.append(
+            "<section><h2>Coverage gaps<em>absence of evidence, not evidence of absence</em>"
+            "</h2><table>"
+        )
+        for name, status, reason in gaps:
+            parts.append(
+                f"<tr class='notable'><td class='k'>{e(name)}</td>"
+                f"<td class='v'>{e(status)}</td><td class='s'>{e(reason or '-')}</td></tr>"
+            )
+        parts.append("</table></section>")
     for res in inv.results:
         if not res.findings and not res.errors:
             continue

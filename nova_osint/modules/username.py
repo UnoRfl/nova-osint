@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.config import DEFAULT_CACHE
-from ..core.models import Confidence, ScanResult, Severity, TargetType
+from ..core.models import Confidence, ModuleStatus, ScanResult, Severity, TargetType
 from ..core.registry import Module, register
 
 SHERLOCK_DATA_URL = (
@@ -49,8 +49,8 @@ def load_sites(http: Any = None, refresh: bool = False) -> tuple[dict[str, dict]
     if not refresh and SITES_CACHE.exists():
         try:
             if time.time() - SITES_CACHE.stat().st_mtime < SITES_CACHE_TTL:
-                data = json.loads(SITES_CACHE.read_text("utf-8"))
-                return _clean(data), f"cache ({len(_clean(data))} sites)"
+                cleaned = _clean(json.loads(SITES_CACHE.read_text("utf-8")))
+                return cleaned, f"cache ({len(cleaned)} sites)"
         except Exception:
             pass
 
@@ -101,7 +101,7 @@ class UsernameModule(Module):
 
     def run(self, target: str, result: ScanResult) -> None:
         handle = target.split("@")[0] if "@" in target else target
-        refresh = bool(getattr(self.config, "_refresh_sites", False))
+        refresh = bool(self.config.option("refresh_sites", False))
         sites, origin = load_sites(self.http, refresh=refresh)
         if not sites:
             result.error("no site database available")
@@ -121,11 +121,11 @@ class UsernameModule(Module):
         found = [h for h in hits if h and h["claimed"]]
         nsfw_hidden = 0
 
-        if getattr(self.config, "_verify_hits", False) and found:
+        if self.config.option("verify_hits", False) and found:
             found = self._verify(found, sites)
 
         for hit in sorted(found, key=lambda h: h["site"].lower()):
-            if hit.get("nsfw") and not getattr(self.config, "_include_nsfw", False):
+            if hit.get("nsfw") and not self.config.option("include_nsfw", False):
                 nsfw_hidden += 1
                 continue
             result.add(
@@ -138,11 +138,24 @@ class UsernameModule(Module):
                 extra={"method": hit["method"], "status": hit["status"]},
             )
 
-        checked = len([h for h in hits if h])
+        # Three different things used to be counted as "unreachable": sites we
+        # actually asked, sites where the handle is not even a legal username,
+        # and sites that refused or timed out. Reporting a legal-name mismatch
+        # as a network failure made every scan of a short handle look broken.
+        answered = [h for h in hits if h and h["outcome"] == "answered"]
+        not_applicable = [h for h in hits if h and h["outcome"] == "not-applicable"]
+        unreachable = len(items) - len(answered) - len(not_applicable)
+
         result.add(
             "coverage",
-            f"{len(found)} hit(s) across {checked} reachable of {len(items)} sites",
+            f"{len(found)} hit(s) across {len(answered)} site(s) that answered, "
+            f"of {len(items)} in the database",
             source="username",
+            extra={
+                "answered": len(answered),
+                "handle_not_valid_there": len(not_applicable),
+                "unreachable": unreachable,
+            },
         )
         if nsfw_hidden:
             result.add(
@@ -150,10 +163,19 @@ class UsernameModule(Module):
                 f"{nsfw_hidden} (re-run with --include-nsfw to show)",
                 source="username",
             )
-
-        failed = len(items) - checked
-        if failed:
-            result.error(f"{failed} site(s) unreachable or timed out")
+        if not_applicable:
+            result.add(
+                "sites that cannot hold this handle",
+                f"{len(not_applicable)} (their username rules reject it)",
+                source="username",
+            )
+        if unreachable:
+            result.error(f"{unreachable} site(s) unreachable, timed out or refused")
+            if unreachable > len(items) / 2:
+                result.degrade(
+                    ModuleStatus.PARTIAL,
+                    f"only {len(answered)} of {len(items)} sites answered",
+                )
 
         # A confirmed handle is the strongest pivot this tool produces.
         for hit in found[:40]:
@@ -167,7 +189,10 @@ class UsernameModule(Module):
         if regex:
             try:
                 if not re.match(regex, handle):
-                    return None  # handle is not even legal on this site
+                    # The handle is not a legal username here, so the site was
+                    # never asked. That is not a failure and must not be counted
+                    # as one.
+                    return {"site": site, "outcome": "not-applicable", "claimed": False}
             except re.error:
                 pass
 
@@ -222,8 +247,10 @@ class UsernameModule(Module):
         return {
             "site": site,
             "url": url,
+            "outcome": "answered",
             "claimed": claimed,
             "status": resp.status,
+            "access": resp.access.value,
             "method": err_type,
             "confidence": confidence,
             "nsfw": bool(meta.get("isNSFW")),

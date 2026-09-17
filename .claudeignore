@@ -3,4 +3,8 @@
 *.key
 *.pem
 secrets.json
+config.json
+nova-config.json
 reports/
+output/
+nova*.log

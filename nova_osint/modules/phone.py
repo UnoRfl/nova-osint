@@ -27,7 +27,7 @@ except Exception:  # pragma: no cover
 LINE_TYPES = {
     0: "fixed line", 1: "mobile", 2: "fixed line or mobile", 3: "toll free",
     4: "premium rate", 5: "shared cost", 6: "VoIP", 7: "personal number",
-    8: "pager", 9: "UAN", 10: "voicemail", 27: "unknown",
+    8: "pager", 9: "UAN", 10: "voicemail", 99: "unknown",
 }
 
 #: Just enough to say something useful when libphonenumber is absent.

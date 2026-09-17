@@ -437,9 +437,9 @@ class ConsoleScreen(ttk.Frame):
             passive_only=self.passive.get(),
             max_sites=int(self.max_sites.get() or 0),
         )
-        cfg._verify_hits = self.verify.get()        # type: ignore[attr-defined]
-        cfg._include_nsfw = self.nsfw.get()         # type: ignore[attr-defined]
-        cfg._refresh_sites = False                  # type: ignore[attr-defined]
+        cfg.set_option("verify_hits", self.verify.get())
+        cfg.set_option("include_nsfw", self.nsfw.get())
+        cfg.set_option("refresh_sites", False)
 
         threading.Thread(
             target=self._run, args=(target, ttype, chosen, cfg), daemon=True

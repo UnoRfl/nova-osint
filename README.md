@@ -144,6 +144,23 @@ offsets, with the distribution shown so you can judge it yourself.
 It disables every module that would send a packet to infrastructure the target
 controls. What is left queries only third parties, so the target sees nothing.
 
+**4. A refusal is reported, not hidden.** NOVA identifies itself honestly in
+every request (`NOVA-OSINT/1.1.0`), respects `Retry-After`, and makes no attempt
+to defeat rate limits, CAPTCHAs, bot detection, WAFs or authentication. When a
+source says no, the module is marked `rate limited` / `blocked` / `unavailable`
+and that appears in the report:
+
+```
+instruments that did not report cleanly
+ instrument   status         reason
+ subdomains   partial        2 source request(s) came back 'rate limited'
+ pwned        skipped        needs $HIBP_API_KEY
+```
+
+"We could not look" and "there was nothing to find" are different answers, and
+a tool that renders them identically will eventually get someone's conclusion
+badly wrong.
+
 ## Output
 
 Five formats: `console` (the default), `json`, `csv`, `markdown`, `html`.
@@ -187,7 +204,54 @@ into a crawl of the internet very quickly.
 --pivot                follow discovered targets one level deep
 --no-art               keep the progress line, drop the animation
 -q / --quiet           machine-friendly: no banner, no progress
+-v / -vv               log what each instrument is doing (-vv for debug)
+--log-file scan.log    full debug log; API keys are redacted out of it
+-c / --config PATH     use a different config.json
 ```
+
+Exit codes: `0` findings, `1` no findings, `2` bad arguments, `3` nothing ran.
+
+## Configuration
+
+Settings live in a JSON file; secrets live in the environment. Four layers,
+highest priority first:
+
+```
+command-line flag  >  environment variable  >  config.json  >  built-in default
+```
+
+```bash
+nova config path      # where the file is
+nova config init      # write it with defaults
+nova config show      # print it, API keys masked
+```
+
+```jsonc
+{
+    "settings": {
+        "timeout": 12.0,
+        "max_retries": 2,
+        "max_concurrent_tasks": 24,
+        "request_delay_min": 0.30,     // each wait is drawn from this range,
+        "request_delay_max": 0.45,     // per host, so workers do not lockstep
+        "cache_enabled": true,
+        "cache_ttl": 3600.0,
+        "verify_tls": true,
+        "user_agent": "",              // blank = NOVA-OSINT/1.1
+        "output_directory": "./output",
+        "passive_only": false,
+        "max_sites": 0
+    },
+    "proxies": { "enabled": false, "http": "", "https": "", "socks5": "" },
+    "api_keys": { "github": "", "hibp": "" },
+    "modules_enabled": { "dorks": false }
+}
+```
+
+No configuration mistake stops a scan: a missing file is created, a malformed
+one falls back to defaults with a warning, an out-of-range number is clamped,
+and an unknown key is reported and ignored. `ARCHITECTURE.md` has the full
+table of what happens to each kind of mistake.
 
 ## API keys
 
@@ -201,7 +265,16 @@ export GITHUB_TOKEN=...        # 60/hr -> 5000/hr; a no-scope classic token is e
 nova scan someuser --only github
 ```
 
+Keys can also go in the `api_keys` block of `config.json`, which is written
+`0600` where the OS supports it. Wherever they come from, a key never leaves
+the process except as a request header: `nova config show` masks them, the
+logger redacts them, reports never contain them, and responses to authenticated
+requests are never written to the disk cache.
+
 ## Extending it
+
+Full guide, including the rules a module must follow, in
+[`ARCHITECTURE.md`](ARCHITECTURE.md). The short version:
 
 A module is one class. Drop it in `nova_osint/modules/`, add it to the import
 list in `core/registry.py`, and it appears in `nova modules` and in every scan

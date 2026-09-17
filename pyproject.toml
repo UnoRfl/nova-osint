@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nova-osint"
-version = "1.0.0"
+version = "1.1.0"
 description = "NOVA - all-in-one OSINT collection: usernames, emails, domains, IPs and phone numbers from public sources."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -43,7 +43,7 @@ Issues = "https://github.com/UnoRfl/nova-osint/issues"
 packages = ["nova_osint"]
 
 [tool.hatch.build.targets.sdist]
-include = ["nova_osint", "tests", "README.md", "LICENSE", "ETHICS.md"]
+include = ["nova_osint", "tests", "README.md", "ARCHITECTURE.md", "LICENSE", "ETHICS.md"]
 
 [tool.ruff]
 line-length = 100
