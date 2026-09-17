@@ -284,7 +284,7 @@ Three keys do something today, and the tool tells you which:
 | `GITHUB_TOKEN` | 60 -> 5,000 req/hr for `github`, `gists`, `email` | free |
 | `VT_API_KEY` | `virustotal`: blocklist verdicts + passive DNS | free tier |
 | `ABUSEIPDB_API_KEY` | `abuseipdb`: IP abuse score | free tier |
-| `SECURITYTRAILS_API_KEY` | `securitytrails`: DNS and WHOIS history | free tier (~50/**month**) |
+| `SECURITYTRAILS_API_KEY` | `securitytrails`: DNS and WHOIS history | **paid** — no free tier advertised |
 | `HIBP_API_KEY` | `pwned`: per-address breach lookup | paid |
 
 `SHODAN_API_KEY`, `HUNTER_API_KEY`, `NUMVERIFY_API_KEY` and `EMAILREP_API_KEY`

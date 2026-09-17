@@ -306,7 +306,7 @@ def test_securitytrails_quota_exhaustion_is_named() -> None:
     res = _run(SecurityTrailsModule, http, "example.com", TargetType.DOMAIN)
     assert res.status is ModuleStatus.RATE_LIMITED
     assert "quota" in res.status_reason
-    assert "50 queries/month" in res.errors[0]
+    assert "quota exhausted" in res.errors[0]
 
 
 def test_securitytrails_bad_key_is_named() -> None:

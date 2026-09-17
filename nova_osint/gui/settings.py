@@ -346,8 +346,8 @@ class SettingsWindow(tk.Toplevel):
         ttk.Combobox(opts, textvariable=self.st_depth, values=["basic", "full"],
                      state="readonly", width=12).pack(anchor="w", pady=(5, 0))
         tk.Label(opts, text="basic = 1 query per scan.  full = 3 (adds the subdomain list "
-                            "and historical WHOIS).\nThe free tier is about 50 queries "
-                            "per MONTH, so full exhausts it in ~16 scans.",
+                            "and historical WHOIS).\nQueries are metered per month on every "
+                            "SecurityTrails plan, so basic is the safe default.",
                  bg=theme.BG, fg=theme.INK_FAINT, font=("Segoe UI", 8),
                  justify="left").pack(anchor="w", pady=(6, 0))
 

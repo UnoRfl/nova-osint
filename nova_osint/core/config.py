@@ -77,8 +77,13 @@ KEY_INFO: dict[str, dict[str, Any]] = {
         "label": "SecurityTrails",
         "unlocks": "Historical DNS and pre-privacy WHOIS - the registrant name and "
                    "email a domain had before redaction.",
-        "url": "https://securitytrails.com/app/account/credentials",
-        "cost": "free tier (~50 queries/MONTH - see module_options)",
+        "url": "https://securitytrails.com/app/signup",
+        # Checked 2026-09-17: the public pricing page lists only Professional
+        # ($500/mo), Business ($1500/mo) and Enterprise, and the API page says
+        # "the API is paid". The old free tier is no longer documented. Signing
+        # up costs nothing and takes no card, so check your dashboard for any
+        # remaining allowance before assuming this module can run.
+        "cost": "paid - no free tier advertised (checked 2026-09-17)",
         "modules": ("securitytrails",),
         "required": True,
     },

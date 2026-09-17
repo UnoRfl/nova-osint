@@ -10,12 +10,19 @@ single highest-value paid lookup in OSINT work: domains registered before
 GDPR-era redaction routinely still have the original registrant name, address
 and email sitting in the archive.
 
-Quota - read this before enabling it
-------------------------------------
+Cost - read this before enabling it
+-----------------------------------
 
-The free tier is around **50 queries per month**. Not per day. That is the
-whole reason this module has a depth setting instead of just querying
-everything:
+**This one is not free.** Checked 2026-09-17: the public pricing page lists
+Professional at $500/month, Business at $1,500/month and Enterprise, and the
+API page states plainly that the API is paid. SecurityTrails is now part of
+Recorded Future and the small free tier it used to offer is no longer
+documented anywhere public. Signing up costs nothing and asks for no card, so
+the only way to know what allowance an account still gets is to look at the
+dashboard after registering.
+
+Whatever the plan, queries are metered by the month, which is why this module
+has a depth setting instead of just asking for everything:
 
 ``basic`` (default)  1 query   current DNS, subdomain count, apex, rank
 ``full``             3 queries adds the subdomain list and historical WHOIS
@@ -24,9 +31,8 @@ Set it in ``config.json``::
 
     "module_options": { "securitytrails_depth": "full" }
 
-At ``full`` a free key is exhausted after roughly sixteen scans, so NOVA
-defaults to ``basic`` and makes you opt in rather than quietly spending your
-month on a scan you did not think about.
+NOVA defaults to ``basic`` so a scan cannot quietly spend three units of a
+metered quota when one would have answered the question.
 """
 
 from __future__ import annotations
@@ -60,7 +66,7 @@ class SecurityTrailsModule(Module):
             return
 
         result.add("queries spent", "1" if depth != "full" else "3", source="securitytrails",
-                   extra={"note": "the free tier allows about 50 per month",
+                   extra={"note": "queries are metered per month on every plan",
                           "depth": depth})
 
         if apex := data.get("apex_domain"):
@@ -100,7 +106,7 @@ class SecurityTrailsModule(Module):
             return None
         if resp.status == 429:
             result.degrade(ModuleStatus.RATE_LIMITED, "SecurityTrails monthly quota exhausted")
-            result.error("SecurityTrails quota exhausted - the free tier is ~50 queries/month")
+            result.error("SecurityTrails monthly quota exhausted - check your plan's allowance")
             return None
         if resp.status == 404:
             result.add("SecurityTrails record", "no entry", source="securitytrails")
