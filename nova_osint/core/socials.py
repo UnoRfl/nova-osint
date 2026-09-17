@@ -31,7 +31,7 @@ import urllib.parse
 from dataclasses import dataclass
 from typing import Any
 
-from .models import Investigation
+from .models import Confidence, Investigation
 
 # ---------------------------------------------------------------------------
 # platforms
@@ -130,8 +130,10 @@ class SocialAccount:
     platform: str
     handle: str
     url: str
-    #: "confirmed" when a module verified the profile exists, "declared" when a
-    #: source said so, "search" when this is a link to check by hand.
+    #: "confirmed" when a module verified the profile exists and belongs
+    #: here, "declared" when a source said so, "possible" when only a name
+    #: matched and the owner is unconfirmed, "search" when this is a link
+    #: to check by hand.
     basis: str
     source: str = ""
     note: str = ""
@@ -185,7 +187,9 @@ def collect(inv: Investigation, subject_handles: set[str] | None = None
     the same account routinely arrives from three modules and a reader does not
     want it three times.
     """
-    rank = {"confirmed": 3, "declared": 2, "search": 1}
+    # A source saying "this is their account" outranks a name search
+    # finding an account with a matching display name.
+    rank = {"confirmed": 4, "declared": 3, "possible": 2, "search": 1}
     best: dict[tuple[str, str], SocialAccount] = {}
 
     for result in inv.results:
@@ -230,6 +234,14 @@ def _basis(module: str, finding: Any) -> str:
     """
     if finding.source == "link" or str(finding.label).startswith("check manually"):
         return "search"
+    # A module reporting a finding as *possible* has told us it is not sure
+    # this belongs to the subject, and that must survive into this table. A
+    # Bluesky name search returns accounts that certainly exist and may well
+    # belong to someone else entirely; filing those as "verified by a lookup"
+    # answered a question ("is this account real?") nobody asked instead of the
+    # one they did ("is this account theirs?").
+    if getattr(finding, "confidence", None) is Confidence.POSSIBLE:
+        return "possible"
     if module == "username":
         # The username module confirms a profile responded, and re-tests it
         # against a control handle unless --no-verify was passed.
@@ -269,7 +281,8 @@ def _unchecked(inv: Investigation, found: list[SocialAccount],
 # rendering
 # ---------------------------------------------------------------------------
 
-BASIS_MARK = {"confirmed": "+", "declared": "~", "search": "?"}
+BASIS_MARK = {"confirmed": "+", "declared": "~", "possible": "*",
+              "search": "?"}
 
 
 def render_text(accounts: list[SocialAccount]) -> str:
@@ -284,8 +297,31 @@ def render_text(accounts: list[SocialAccount]) -> str:
         if a.note:
             out.append(f"       {' ' * width}  {a.note}")
     out.append("")
-    out.append("    + verified by a lookup   ~ declared by a source   "
+    out.append("    + verified by a lookup   ~ declared by a source")
+    out.append("    * name matches, owner unconfirmed   "
                "? not checkable, open by hand")
+    return "\n".join(out)
+
+
+def render_markdown(accounts: list[SocialAccount]) -> str:
+    """One row per platform, with the link, for the markdown report.
+
+    The flat report listed accounts wherever the module that found them
+    happened to land, so the same person's four profiles appeared under four
+    headings. One table is the thing a reader actually wants to copy out.
+    """
+    if not accounts:
+        return ""
+    out = ["| | Platform | Handle | Link | How we know |", "|---|---|---|---|---|"]
+    for a in accounts:
+        handle = f"`@{a.handle}`" if a.handle != "-" else ""
+        note = f" - {a.note}" if a.note else ""
+        out.append(f"| {BASIS_MARK[a.basis]} | {a.platform} | {handle} "
+                   f"| <{a.url}> | {a.basis}{note} |")
+    out += ["",
+            "`+` verified by a lookup &nbsp; `~` declared by a source &nbsp; "
+            "`*` name matches, owner unconfirmed &nbsp; "
+            "`?` not checkable, open by hand", ""]
     return "\n".join(out)
 
 

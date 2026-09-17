@@ -150,7 +150,8 @@ code,.g{font-family:ui-monospace,'Cascadia Code',monospace;font-size:12px}
 .gA{background:#0f3d2b;color:#5ee6a8}.gB{background:#123a45;color:#67d8f0}
 .gC{background:#3d3413;color:#f0d267}.gD{background:#2a2734;color:#a6a2bb}
 .gE{background:#3d1520;color:#ff8fa8}
-/* social-panel basis chips: Confirmed, Declared, Search-by-hand */
+/* social-panel basis chips: Confirmed, Declared, Possible, Search-by-hand */
+.gP{background:#33203f;color:#d7a8f5}
 .gS{background:#2a2734;color:#a6a2bb}
 a{color:#7dd3fc;text-decoration:none}
 a:hover{text-decoration:underline}

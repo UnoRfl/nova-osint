@@ -163,6 +163,10 @@ def extract(inv: Investigation) -> list[Subject]:
         return []
 
     per_person: dict[str, dict[str, list[Value]]] = {}
+    #: Which module named each candidate. Needed because a candidate's own name
+    #: is filled in below from the heading, and attributing that to a fixed
+    #: source would put a real module's name against a fact it never reported.
+    named_by: dict[str, list[str]] = {}
     for result in inv.results:
         for finding in result.findings:
             label = str(finding.label)
@@ -170,6 +174,8 @@ def extract(inv: Investigation) -> list[Subject]:
             if not rest:
                 # No prefix: the fact is about whoever was scanned.
                 who, rest = "", label
+            elif result.module not in named_by.setdefault(who, []):
+                named_by[who].append(result.module)
             for name, pattern, _always, _note in ATTRIBUTES:
                 if not pattern.search(rest):
                     continue
@@ -200,12 +206,14 @@ def extract(inv: Investigation) -> list[Subject]:
             merged.setdefault(key, []).extend(values)
         subjects.append(Subject(name=who, candidate=True,
                                 attributes=_attributes(merged, core=True,
-                                                       known_name=who)))
+                                                       known_name=who,
+                                                       named_by=named_by.get(who, []))))
     return subjects
 
 
 def _attributes(found: dict[str, list[Value]], *, core: bool,
-                known_name: str | None) -> list[Attribute]:
+                known_name: str | None,
+                named_by: list[str] | None = None) -> list[Attribute]:
     out = []
     for name, _pattern, always, note in ATTRIBUTES:
         values = _dedupe(found.get(name, []))
@@ -214,7 +222,12 @@ def _attributes(found: dict[str, list[Value]], *, core: bool,
             # "Name: not established" directly under a heading carrying that
             # very name is the kind of thing that makes a reader distrust the
             # rest of the document.
-            values = [Value(known_name, "wikidata", "B2")]
+            #
+            # The source is whichever module prefixed its findings with this
+            # name, not a fixed one: this used to say "wikidata" whoever had
+            # actually reported it, which is a citation to a source that never
+            # made the claim - the exact failure the grades exist to prevent.
+            values = [Value(known_name, ", ".join(named_by or []) or "scan", "B2")]
         if values or (always and core):
             out.append(Attribute(label=name, values=values, note=note))
     return out
@@ -238,13 +251,19 @@ def _dedupe(values: list[Value]) -> list[Value]:
     two modules *disagreeing* must stay visible as two rows.
     """
     by_text: dict[str, Value] = {}
+    # Sources are compared as whole names, not as substrings of the joined
+    # string: "ip" is a substring of "abuseipdb", so a substring test drops the
+    # second source and the line claims one witness where there were two.
+    sources: dict[str, list[str]] = {}
     for value in values:
         key = value.text.casefold()
         if key in by_text:
-            if value.source not in by_text[key].source:
-                by_text[key].source += f", {value.source}"
+            if value.source not in sources[key]:
+                sources[key].append(value.source)
+                by_text[key].source = ", ".join(sources[key])
             continue
         by_text[key] = Value(value.text, value.source, value.grade, value.url)
+        sources[key] = [value.source]
     return list(by_text.values())
 
 
@@ -282,6 +301,43 @@ def _attributes_text(attributes: list[Attribute], width: int) -> str:
         if attr.note:
             out.append(f"    {' ' * width} ({attr.note})")
     return "\n".join(out)
+
+
+def render_markdown(subjects: list[Subject]) -> str:
+    """The same block as the terminal, as a table.
+
+    The markdown report used to have none of this: it went straight from the
+    summary counts into one section per module, so a person scan exported to
+    a file lost the entire "who is this" layer that the terminal and the HTML
+    both lead with. A reader got twelve module headings and no answer.
+    """
+    if not subjects:
+        return ""
+    out: list[str] = []
+    for subject in subjects:
+        if subject.candidate:
+            out += [f"**If this is {subject.name}**", ""]
+        out += ["| Attribute | Value | Source |", "|---|---|---|"]
+        for attr in subject.attributes:
+            if not attr.established:
+                out.append(f"| {attr.label} | *not established* | - |")
+                continue
+            first, *rest = attr.values
+            flag = (" **(sources disagree)**" if attr.disputed
+                    else " *(several)*" if attr.multivalued else "")
+            out.append(f"| {attr.label} | {_md(first.text)}{flag} "
+                       f"| `{first.grade}` {first.source} |")
+            for value in rest:
+                out.append(f"| | {_md(value.text)} | `{value.grade}` {value.source} |")
+            if attr.note:
+                out.append(f"| | *{attr.note}* | |")
+        out.append("")
+    return "\n".join(out)
+
+
+def _md(text: str) -> str:
+    """A cell value that cannot break out of its table row."""
+    return text.replace("|", "\\|").replace("\n", " ")
 
 
 def render_html(subjects: list[Subject]) -> str:

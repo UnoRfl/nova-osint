@@ -225,10 +225,26 @@ class MailPostureModule(Module):
             if policy == "none":
                 result.add("DMARC weakness", "p=none: monitoring only, nothing is blocked",
                            source="analysis", severity=Severity.HIGH)
-            for rua in re.findall(r"mailto:([^,;\s]+)", policy_rec):
-                result.entity(EntityType.EMAIL, rua, relation="dmarc-reports-to",
-                              evidence="dmarc-rua",
-                              detail="address in the DMARC rua tag")
+            # rua and ruf are different tags carrying different things, and
+            # scooping every mailto: out of the whole record labelled them all
+            # "rua". ruf is the one that matters more: a forensic address
+            # receives failed messages themselves - headers, sometimes the body
+            # - so whoever reads it sees mail sent to the domain. Reporting
+            # that as an aggregate-report address understates it.
+            for tag, evidence, detail in (
+                ("rua", "dmarc-rua", "address in the DMARC rua tag "
+                                     "(aggregate reports)"),
+                ("ruf", "dmarc-ruf", "address in the DMARC ruf tag "
+                                     "(forensic reports: receives failed "
+                                     "messages, headers and all)"),
+            ):
+                m_tag = re.search(rf"\b{tag}=([^;]+)", policy_rec)
+                if not m_tag:
+                    continue
+                for addr in re.findall(r"mailto:([^,;\s]+)", m_tag.group(1)):
+                    result.entity(EntityType.EMAIL, addr,
+                                  relation="dmarc-reports-to",
+                                  evidence=evidence, detail=detail)
         else:
             result.add("DMARC", "missing", source="doh", severity=Severity.HIGH)
 

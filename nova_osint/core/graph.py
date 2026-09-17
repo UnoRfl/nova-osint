@@ -87,6 +87,7 @@ EVIDENCE: dict[str, float] = {
     "subdomain-of": 3.0,
     "spf-include": 2.0,
     "dmarc-rua": 2.0,            # where a domain sends its DMARC reports
+    "dmarc-ruf": 2.0,            # and its forensic ones, which carry messages
     "email-domain": 3.0,         # the domain half of an address
     "profile-email": 3.5,        # an address the account holder published
     "profile-link": 1.5,         # a link someone put on their own profile

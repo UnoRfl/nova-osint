@@ -302,9 +302,20 @@ class Investigation:
 
     @property
     def pivots(self) -> list[Pivot]:
+        """What to scan next - which never includes what was just scanned.
+
+        A domain is a SAN on its own certificate and an MX for its own mail, so
+        the target kept turning up in its own "scan these next" list. Harmless
+        in isolation, but ``--pivot`` follows this list, and following it back
+        to the seed spends a whole pivot budget re-running the scan that
+        produced it.
+        """
+        self_key = self.target.strip().casefold()
         seen: dict[tuple[str, str], Pivot] = {}
         for r in self.results:
             for p in r.pivots:
+                if p.target.strip().casefold() == self_key:
+                    continue
                 seen.setdefault((p.target, p.target_type.value), p)
         return list(seen.values())
 
