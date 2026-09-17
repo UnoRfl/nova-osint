@@ -7,7 +7,7 @@
 block_cipher = None
 
 a = Analysis(
-    ["nova_osint/gui/__main__.py"],
+    ["launcher.py"],
     pathex=[],
     binaries=[],
     # The bundled site catalogue and disposable-mail seed are read with
