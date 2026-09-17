@@ -46,6 +46,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -200,6 +201,16 @@ def _value_text(value: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _discard(path: Path | None) -> None:
+    """Remove a temp file, ignoring the case where it is already gone."""
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 class EvidenceStore:
     """Content-addressed store of raw response bodies.
 
@@ -222,16 +233,31 @@ class EvidenceStore:
         path = self._path(digest)
         if path.exists():
             return digest
+        tmp = None
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             # Write to a temporary name and rename: a half-written evidence file
             # whose name claims a digest it does not hash to is worse than none.
-            tmp = path.with_suffix(".part")
+            #
+            # The temp name carries the writer's identity. Two threads storing
+            # the *same* bytes is normal - single-flight shares the response but
+            # each module's recorder files it - and with a shared ".part" name
+            # they raced: one renamed it out from under the other, whose replace
+            # then failed on Windows and dropped the body. The finding survived
+            # and its evidence quietly did not, which is the worst shape a bug
+            # in this file can take.
+            tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.part")
             with gzip.open(tmp, "wb", compresslevel=6) as fh:
                 fh.write(data)
             os.replace(tmp, path)
         except OSError as exc:
+            # Content-addressed: if it is already there, someone else won the
+            # race and wrote the identical bytes. That is success, not failure.
+            if path.exists():
+                _discard(tmp)
+                return digest
             log.warning("could not store evidence %s: %s", digest[:12], exc)
+            _discard(tmp)
             return None
         return digest
 

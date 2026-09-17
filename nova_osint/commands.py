@@ -17,6 +17,7 @@ import argparse
 import json
 import sys
 import time
+from dataclasses import dataclass, field
 from typing import Any
 
 from .core import report as reporting
@@ -32,6 +33,23 @@ EXIT_OK = 0
 EXIT_NO_FINDINGS = 1
 EXIT_USAGE = 2
 
+#: Timeouts that match what the modules actually allow. crt.sh regularly takes
+#: 20-40 seconds under load and the subdomain module gives it 45; a 10-second
+#: probe reports it down while the scan that follows uses it happily.
+SLOW = 45.0
+
+DNS_JSON = {"accept": "application/dns-json"}
+
+
+@dataclass(frozen=True)
+class Probe:
+    source: str
+    url: str
+    provides: str
+    key: str | None = None
+    headers: dict[str, str] = field(default_factory=dict)
+    timeout: float = 10.0
+
 
 # ---------------------------------------------------------------------------
 # doctor
@@ -40,40 +58,52 @@ EXIT_USAGE = 2
 #: Every external source NOVA can use, with a request that proves reachability
 #: without being a scan of anybody. Answers the question the coverage-gaps
 #: section raises after the fact - "why was this empty?" - before the scan.
-PROBES: list[tuple[str, str, str, str | None]] = [
-    # (source, probe url, what it provides, api key name or None)
-    ("dns.google", "https://dns.google/resolve?name=example.com&type=A",
-     "DNS over HTTPS (primary resolver)", None),
-    ("cloudflare-dns", "https://cloudflare-dns.com/dns-query?name=example.com&type=A",
-     "DNS over HTTPS (fallback resolver)", None),
-    ("rdap.org", "https://rdap.org/domain/example.com",
-     "domain registration records", None),
-    ("crt.sh", "https://crt.sh/?q=example.com&output=json",
-     "certificate transparency (subdomains)", None),
-    ("certspotter", "https://api.certspotter.com/v1/issuances?domain=example.com",
-     "certificate transparency (second opinion)", None),
-    ("hackertarget", "https://api.hackertarget.com/hostsearch/?q=example.com",
-     "host search", None),
-    ("rapiddns", "https://rapiddns.io/subdomain/example.com",
-     "subdomain records", None),
-    ("ip-api.com", "http://ip-api.com/json/8.8.8.8",
-     "IP geolocation and ASN", None),
-    ("internetdb.shodan", "https://internetdb.shodan.io/8.8.8.8",
-     "open ports and CVEs (keyless)", None),
-    ("web.archive.org", "https://archive.org/wayback/available?url=example.com",
-     "archive history", None),
-    ("haveibeenpwned", "https://haveibeenpwned.com/api/v3/breaches",
-     "breach catalogue (keyless endpoint)", None),
-    ("gravatar", "https://www.gravatar.com/avatar/0?d=404",
-     "avatar and profile by email hash", None),
-    ("api.github.com", "https://api.github.com/rate_limit",
-     "profiles, repos, keys, commit emails", "github"),
-    ("virustotal", "https://www.virustotal.com/api/v3/domains/example.com",
-     "passive DNS and reputation", "virustotal"),
-    ("securitytrails", "https://api.securitytrails.com/v1/ping",
-     "DNS history (paid plan)", "securitytrails"),
-    ("abuseipdb", "https://api.abuseipdb.com/api/v2/check?ipAddress=8.8.8.8",
-     "abuse reports", "abuseipdb"),
+#: Each probe carries the headers and timeout its module uses. That is not
+#: tidiness. The first version sent a bare GET to the DoH resolvers and reported
+#: a perfectly healthy Cloudflare as unreachable, because DoH answers 400
+#: without an accept: application/dns-json header. A checker that calls a
+#: working source broken is worse than no checker - people learn to ignore it.
+PROBES: list[Probe] = [
+    Probe("dns.google", "https://dns.google/resolve?name=example.com&type=A",
+          "DNS over HTTPS (primary resolver)", headers=DNS_JSON),
+    Probe("cloudflare-dns",
+          "https://cloudflare-dns.com/dns-query?name=example.com&type=A",
+          "DNS over HTTPS (fallback resolver)", headers=DNS_JSON),
+    Probe("rdap.org", "https://rdap.org/domain/example.com",
+          "domain registration records", timeout=20.0),
+    Probe("crt.sh", "https://crt.sh/?q=example.com&output=json",
+          "certificate transparency (subdomains)", timeout=SLOW),
+    Probe("certspotter",
+          "https://api.certspotter.com/v1/issuances?domain=example.com",
+          "certificate transparency (second opinion)", timeout=30.0),
+    Probe("hackertarget", "https://api.hackertarget.com/hostsearch/?q=example.com",
+          "host search"),
+    Probe("rapiddns", "https://rapiddns.io/subdomain/example.com",
+          "subdomain records", timeout=30.0),
+    Probe("ip-api.com", "http://ip-api.com/json/8.8.8.8",
+          "IP geolocation and ASN"),
+    Probe("internetdb.shodan", "https://internetdb.shodan.io/8.8.8.8",
+          "open ports and CVEs (keyless)"),
+    Probe("web.archive.org", "https://archive.org/wayback/available?url=example.com",
+          "archive history", timeout=20.0),
+    Probe("haveibeenpwned", "https://haveibeenpwned.com/api/v3/breaches",
+          "breach catalogue (keyless endpoint)", timeout=20.0),
+    Probe("gravatar", "https://www.gravatar.com/avatar/0?d=404",
+          "avatar and profile by email hash"),
+    Probe("keybase", "https://keybase.io/_/api/1.0/user/lookup.json?usernames=chris",
+          "signed identity proofs"),
+    Probe("npm", "https://registry.npmjs.org/-/v1/search?text=maintainer:npm&size=1",
+          "package authorship and publisher email"),
+    Probe("crates.io", "https://crates.io/api/v1/users/rust-lang-owner",
+          "crate authorship"),
+    Probe("api.github.com", "https://api.github.com/rate_limit",
+          "profiles, repos, keys, commit emails", key="github"),
+    Probe("virustotal", "https://www.virustotal.com/api/v3/domains/example.com",
+          "passive DNS and reputation", key="virustotal"),
+    Probe("securitytrails", "https://api.securitytrails.com/v1/ping",
+          "DNS history (paid plan)", key="securitytrails"),
+    Probe("abuseipdb", "https://api.abuseipdb.com/api/v2/check?ipAddress=8.8.8.8",
+          "abuse reports", key="abuseipdb"),
 ]
 
 
@@ -86,24 +116,30 @@ def cmd_doctor(args: argparse.Namespace, cfg: Config) -> int:
     things. Run it once from a new network and the coverage gaps stop being a
     surprise at the end of a fifteen-minute scan.
     """
+    if getattr(args, "leak_check", False):
+        return _leak_report(args, cfg)
+
     probes = PROBES
     if getattr(args, "keyless", False):
-        probes = [p for p in probes if p[3] is None]
+        probes = [p for p in probes if p.key is None]
 
     print(f"NOVA doctor - probing {len(probes)} source(s) from this machine\n")
     fetcher = Fetcher(timeout=args.timeout or 10.0, concurrency=args.concurrency or 8,
                       retries=0, cache_dir=None, proxy=args.proxy,
                       verify_tls=not getattr(args, "insecure", False))
     try:
-        results = fetcher.map(lambda p: (p, fetcher.get(p[1])), probes)
+        results = fetcher.map(
+            lambda p: (p, fetcher.get(p.url, headers=dict(p.headers),
+                                      timeout=args.timeout or p.timeout)),
+            probes)
     finally:
         fetcher.close()
 
-    width = max(len(p[0]) for p in probes)
+    width = max(len(p.source) for p in probes)
     ok = gated = broken = 0
     rows = []
     for probe, resp in results:
-        name, _url, what, key = probe
+        name, what, key = probe.source, probe.provides, probe.key
         have_key = bool(key and cfg.has(key))
         verdict, note = _verdict(resp, key, have_key)
         if verdict == "ok":
@@ -120,13 +156,59 @@ def cmd_doctor(args: argparse.Namespace, cfg: Config) -> int:
         print("\nAn unavailable source is not an empty result. A scan will report these\n"
               "as coverage gaps rather than pretending it looked.", file=sys.stderr)
     if gated:
-        missing = sorted({KEY_ENV.get(p[3], p[3] or "") for p in probes
-                          if p[3] and not cfg.has(p[3])})
+        missing = sorted({KEY_ENV.get(p.key, p.key or "") for p in probes
+                          if p.key and not cfg.has(p.key)})
         print(f"Set these to widen coverage: {', '.join(missing)}", file=sys.stderr)
     if getattr(args, "format", None) == "json":
         print(json.dumps([{"source": n, "verdict": v, "note": t, "provides": w}
                           for n, v, t, w in rows], indent=2))
     return EXIT_OK if ok else EXIT_NO_FINDINGS
+
+
+def _leak_report(args: argparse.Namespace, cfg: Config) -> int:
+    """Does the proxy actually change the address we present?
+
+    A scan configured to go through a proxy and silently falling back to the
+    direct route looks identical from the inside, and the difference is the
+    analyst's own address in somebody's logs. Refusing to answer is the only
+    honest outcome when there is nothing to compare.
+    """
+    from .core.opsec import leak_check
+
+    proxy = args.proxy or cfg.proxy
+    if not proxy:
+        print("no proxy configured, so there is nothing to compare.",
+              file=sys.stderr)
+        print("Pass --proxy to check that it is actually being used.",
+              file=sys.stderr)
+        return EXIT_USAGE
+
+    direct = Fetcher(timeout=15.0, concurrency=1, retries=0, cache_dir=None)
+    proxied = Fetcher(timeout=15.0, concurrency=1, retries=0, cache_dir=None,
+                      proxy=proxy)
+    try:
+        report = leak_check(direct, proxied)
+    finally:
+        direct.close()
+        proxied.close()
+
+    if report["error"]:
+        print(f"could not complete the check: {report['error']}", file=sys.stderr)
+        print("Treat that as a failure, not a pass.", file=sys.stderr)
+        return EXIT_NO_FINDINGS
+    print(f"  direct   {report['direct']}")
+    print(f"  proxied  {report['proxied']}")
+    if report["leaking"]:
+        print("", file=sys.stderr)
+        print("  LEAKING: both routes present the same address. The proxy is not",
+              file=sys.stderr)
+        print("  carrying your traffic, and a scan through it exposes you exactly",
+              file=sys.stderr)
+        print("  as much as one without it.", file=sys.stderr)
+        return EXIT_NO_FINDINGS
+    print("")
+    print("  the proxy is carrying the traffic.")
+    return EXIT_OK
 
 
 def _verdict(resp: Any, key: str | None, have_key: bool) -> tuple[str, str]:

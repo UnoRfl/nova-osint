@@ -291,6 +291,12 @@ class Fetcher:
         self.user_agent = user_agent or DEFAULT_UA
         self.policy = retry_policy or RetryPolicy(max_retries=max(0, retries))
         self.limiter = _RateLimiter(per_host_delay, per_host_delay_max)
+        # Identical concurrent requests share one answer. Two modules wanting
+        # the same MX record at the same moment is normal, and was observed to
+        # make one of the two come back 200 with an empty body.
+        from .opsec import SingleFlight
+
+        self._flight = SingleFlight()
         self.pool = ThreadPoolExecutor(
             max_workers=max(1, concurrency), thread_name_prefix=_WORKER_PREFIX
         )
@@ -342,7 +348,36 @@ class Fetcher:
                 log.debug("cache hit %s", url)
                 return hit
 
-        host = urllib.parse.urlsplit(url).netloc
+        # Only plain cacheable GETs are coalesced. A request carrying auth, or
+        # one that opted out of the cache, may be deliberately distinct, and
+        # sharing its response between callers would be a surprise.
+        if cacheable:
+            resp = self._flight.do(key, lambda: self._attempts(url, headers,
+                                                               follow_redirects,
+                                                               method, data, timeout))
+        else:
+            resp = self._attempts(url, headers, follow_redirects, method, data, timeout)
+
+        if cacheable and self.cache is not None:
+            self.cache.put(key, resp)
+        return resp
+
+    def _attempts(
+        self,
+        url: str,
+        headers: dict[str, str] | None,
+        follow_redirects: bool,
+        method: str,
+        data: bytes | None,
+        timeout: float | None,
+    ) -> Response:
+        """One logical request, including retries and rate limiting."""
+        from .opsec import budget_key
+
+        # Keyed on the operator, not the hostname: api.github.com and
+        # raw.githubusercontent.com are one rate limit, and treating them as two
+        # is how a scan gets a 403 while believing it was being polite.
+        host = budget_key(url) or urllib.parse.urlsplit(url).netloc
         resp = Response(url=url, status=0)
         attempt = 0
         while True:
@@ -378,9 +413,6 @@ class Fetcher:
 
         if resp.access.is_refusal:
             log.debug("%s %s -> %s", method, url, resp.describe())
-
-        if cacheable and self.cache is not None:
-            self.cache.put(key, resp)
         return resp
 
     def head(self, url: str, **kw: Any) -> Response:

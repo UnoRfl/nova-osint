@@ -346,3 +346,38 @@ def test_finding_id_is_stable_across_runs():
     f = Finding(label="mail exchangers", value="a", source="doh")
     g = Finding(label="Mail Exchangers", value="b", source="DOH")
     assert finding_id("domain", f) == finding_id("domain", g)
+
+
+def test_concurrent_writes_of_identical_bytes_all_succeed(tmp_path):
+    """Two modules filing the same shared response must not race each other.
+
+    Single-flight makes them share one response and each recorder files it, so
+    simultaneous identical writes are the normal case. With a shared temp name
+    one thread renamed the file out from under the other, whose replace then
+    failed on Windows - the finding survived and its evidence silently did not.
+    """
+    import threading
+
+    ev = EvidenceStore(tmp_path / "ev")
+    data = b"x" * 5000
+    results, errors = [], []
+
+    def store():
+        try:
+            results.append(ev.put(data))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=store) for _ in range(12)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert not errors
+    assert all(r is not None for r in results), "a concurrent write was dropped"
+    assert len(set(results)) == 1
+    assert ev.verify(results[0])
+    assert ev.size()[0] == 1, "content addressing must still deduplicate"
+    leftovers = [p.name for p in ev.root.rglob("*.part")]
+    assert leftovers == [], f"temp files left behind: {leftovers}"

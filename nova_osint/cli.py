@@ -174,6 +174,9 @@ def build_parser() -> argparse.ArgumentParser:
     doc = sub.add_parser("doctor", help="probe every source from this machine")
     doc.add_argument("--keyless", action="store_true",
                      help="skip sources that need an API key")
+    doc.add_argument("--leak-check", action="store_true",
+                     help="check that --proxy actually changes the address we "
+                          "present, instead of silently falling back to direct")
     doc.add_argument("-f", "--format", choices=["text", "json"], default="text")
     _common(doc)
 

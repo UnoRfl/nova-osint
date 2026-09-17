@@ -43,6 +43,7 @@ from .http import AccessStatus, Fetcher, Response
 from .logging_config import get_logger
 from .models import Investigation, ModuleStatus, ScanResult, TargetType
 from .normalizer import DataNormalizer
+from .opsec import PassiveGuard, PassiveViolation
 from .registry import Module, detect_type, select
 
 log = get_logger("engine")
@@ -356,11 +357,26 @@ class Engine:
         res.subject = subject if subject is not None else entity_for(target, ttype)
         recorder = _ModuleHttp(self.http, module.name, self.evidence)
         module.http = recorder  # type: ignore[assignment]
+        guard: PassiveGuard | None = None
+        if self.config.passive_only and not module.active:
+            # --passive already refused to run the modules that declare
+            # active = True. This catches the other case: one that forgot to,
+            # or grew a request that reaches the target after it was written.
+            # A promise a tool cannot check is not worth making.
+            guard = PassiveGuard(target)
+            module.http = guard.wrap(recorder)  # type: ignore[assignment]
         self.progress(module.name, "start")
         log.debug("module %s started", module.name)
         started = time.monotonic()
         try:
             module.run(target, res)
+        except PassiveViolation as exc:
+            # Not a module failure - the guard did its job. Reported as a
+            # coverage gap so the scan says what it declined to do, rather than
+            # producing a quietly smaller result.
+            res.degrade(ModuleStatus.SKIPPED, str(exc))
+            res.error(str(exc))
+            log.warning("passive guard stopped %s: %s", module.name, exc)
         except Exception as exc:  # noqa: BLE001 - the plugin isolation boundary
             # This is the one broad catch in the project and it is the point of
             # the design: a module bug costs that module, not the investigation.
@@ -368,6 +384,9 @@ class Engine:
             res.error(f"{type(exc).__name__}: {exc}")
             log.error("module %s failed: %s: %s", module.name, type(exc).__name__, exc)
         res.duration = time.monotonic() - started
+        if guard is not None and guard.blocked:
+            log.info("passive guard blocked %d request(s) from %s",
+                     len(guard.blocked), module.name)
         with self._ledger_lock:
             self._ledger.extend(recorder.ledger)
 

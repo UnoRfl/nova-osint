@@ -93,16 +93,40 @@ def test_doctor_reports_a_dead_host_as_down_not_as_empty():
 
 def test_every_probe_is_well_formed():
     from nova_osint.commands import PROBES
+    from nova_osint.core.config import KEY_INFO
 
-    names = [p[0] for p in PROBES]
+    names = [p.source for p in PROBES]
     assert len(names) == len(set(names)), "duplicate probe name"
-    for name, url, what, key in PROBES:
-        assert url.startswith(("http://", "https://")), name
-        assert what and not what.endswith("."), name
-        if key is not None:
-            from nova_osint.core.config import KEY_INFO
+    for probe in PROBES:
+        assert probe.url.startswith(("http://", "https://")), probe.source
+        assert probe.provides and not probe.provides.endswith("."), probe.source
+        assert probe.timeout > 0
+        if probe.key is not None:
+            assert probe.key in KEY_INFO, (
+                f"{probe.source} probes for an unknown key {probe.key!r}")
 
-            assert key in KEY_INFO, f"{name} probes for an unknown key {key!r}"
+
+def test_doh_probes_send_the_header_the_resolver_requires():
+    """DoH answers 400 to a bare GET.
+
+    The first version of doctor did exactly that and reported a healthy
+    Cloudflare as unreachable - a checker that calls a working source broken is
+    one people learn to ignore.
+    """
+    from nova_osint.commands import PROBES
+
+    doh = [p for p in PROBES if "dns-query" in p.url or "/resolve?" in p.url]
+    assert doh, "no DoH probes left to check"
+    for probe in doh:
+        assert probe.headers.get("accept") == "application/dns-json", probe.source
+
+
+def test_slow_sources_get_the_timeout_their_module_allows():
+    """A probe stricter than the scan reports a gap the scan will not hit."""
+    from nova_osint.commands import PROBES
+
+    crtsh = next(p for p in PROBES if p.source == "crt.sh")
+    assert crtsh.timeout >= 45.0
 
 
 # ---------------------------------------------------------------------------
