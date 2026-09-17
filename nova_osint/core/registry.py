@@ -131,6 +131,7 @@ def import_modules() -> None:
     _imported = True
     from ..modules import (  # noqa: F401
         breach,
+        correlators,
         domain,
         dorks,
         email,

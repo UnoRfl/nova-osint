@@ -344,3 +344,30 @@ def test_serialisation_round_trips_the_summary():
     assert d["summary"]["entities"] == 2 and d["summary"]["edges"] == 1
     assert d["summary"]["by_type"]["ip"] == 1
     assert all(math.isfinite(e["llr"]) for e in d["edges"])
+
+
+# ---------------------------------------------------------------------------
+# fingerprint canonicalisation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("AA:BB:CC:DD:EE:FF:00:11", "aabbccddeeff0011"),   # colon-separated hex folds
+    ("aabbccddeeff0011", "aabbccddeeff0011"),
+    ("sha256:AABBCCDDEEFF0011", "sha256:aabbccddeeff0011"),  # only the digest folds
+    ("ssh/SHA256:aBcD+/xyz", "ssh/SHA256:aBcD+/xyz"),  # base64 is left alone
+    ("  a1b2c3d4  ", "a1b2c3d4"),
+])
+def test_digest_canonicalisation(raw, expected):
+    assert canonical(EntityType.KEY, raw) == expected
+
+
+def test_base64_fingerprints_that_differ_only_in_case_are_different_keys():
+    """Casefolding a base64 fingerprint merges two unrelated identities.
+
+    The worst error this module can make: an SSH fingerprint is base64, where
+    case is significant, so folding it would claim one person holds both keys.
+    """
+    a = canonical(EntityType.KEY, "SHA256:abc+def/ghi")
+    b = canonical(EntityType.KEY, "SHA256:ABC+DEF/GHI")
+    assert a != b

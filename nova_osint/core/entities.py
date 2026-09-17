@@ -183,7 +183,7 @@ def canonical(etype: EntityType, value: Any) -> str:
         return text.lstrip("@").casefold()
     if etype in (EntityType.CERT, EntityType.SPKI, EntityType.KEY,
                  EntityType.FAVICON, EntityType.FILEHASH):
-        return re.sub(r"[\s:]", "", text).casefold()
+        return _canon_digest(text)
     if etype in (EntityType.PERSON, EntityType.ORG):
         return _collapse_ws(text).casefold()
     return _collapse_ws(text)
@@ -229,6 +229,45 @@ def _canon_ip(text: str) -> str:
         return str(ipaddress.ip_address(text.strip().strip("[]")))
     except ValueError:
         return ""
+
+
+_HEX_DIGEST = re.compile(r"^[0-9A-Fa-f]{8,128}$")
+
+
+def _canon_digest(text: str) -> str:
+    """Canonicalise a fingerprint without destroying it.
+
+    Two shapes turn up and they need opposite treatment. A hex digest is
+    case-insensitive and often colon-separated (``AA:BB:CC``), so it folds to
+    lowercase with the separators removed. An OpenSSH or SPKI fingerprint is
+    **base64**, where case is significant - ``SHA256:abc`` and ``SHA256:ABC`` are
+    different keys - so casefolding it can merge two unrelated identities into
+    one node, which is the worst error this whole module can make.
+
+    A value may also be prefixed (``ssh/SHA256:...``, ``dom/<sha256>``); the
+    prefix is kept, because it is what stops a favicon hash and a file hash that
+    happen to collide from becoming the same entity.
+    """
+    text = re.sub(r"\s+", "", text)
+    prefix, sep, body = text.rpartition("/")
+    head = prefix + sep
+
+    # Plain hex, with or without colon separators: AA:BB:CC and aabbcc are one
+    # fingerprint. Must be tried first, or the leading "AA" is mistaken for an
+    # algorithm label.
+    stripped = body.replace(":", "")
+    if _HEX_DIGEST.match(stripped):
+        return f"{head}{stripped.lower()}"
+
+    # Labelled hex: sha1:AABBCC. Only the digest folds; the label stays as the
+    # emitter wrote it, so the value still matches what the tool it came from
+    # prints and a user can grep one against the other.
+    algo, algo_sep, digest = body.partition(":")
+    if algo_sep and algo.isalnum() and _HEX_DIGEST.match(digest.replace(":", "")):
+        return f"{head}{algo}:{digest.replace(':', '').lower()}"
+
+    # Anything else - base64 and friends - is returned untouched.
+    return f"{head}{body}"
 
 
 def _canon_cidr(text: str) -> str:
