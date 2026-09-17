@@ -44,3 +44,12 @@ htmlcov/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Scan output. Reports are investigation data and must never be committed.
+nova-*.md
+nova-*.html
+nova-*.json
+nova-*.csv
+nova-*.graphml
+/output/
+/cases/
