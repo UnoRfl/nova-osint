@@ -5,8 +5,10 @@ registry, reads the environment for keys, opens the HTTP transport, pulls the
 platform catalogue and probes the upstream sources. If a source is down you
 find out on this screen rather than halfway through your first scan.
 
-A minimum display time keeps the animation on screen long enough to be worth
-having when everything is warm and initialisation takes under a second.
+The screen **waits for you**. Initialisation finishing does not advance it;
+pressing Enter (or Space, or the button) does. The point of showing the boot
+log is that you can read it - if crt.sh is down or a key was rejected, that
+line is on screen until you have actually seen it.
 """
 
 from __future__ import annotations
@@ -19,13 +21,14 @@ from collections.abc import Callable
 from tkinter import ttk
 
 from ..core import dns as dnsmod
-from ..core.config import DEFAULT_CACHE, Config
+from ..core.config import DEFAULT_CACHE, Config, runtime_config
 from ..core.http import Fetcher
 from ..core.registry import all_modules
 from . import theme
 from .orbit import OrbitCanvas, Wordmark
 
-MIN_SECONDS = 4.2
+#: How fast the "press ENTER" hint breathes, in milliseconds per step.
+HINT_PULSE_MS = 90
 
 
 class BootScreen(ttk.Frame):
@@ -70,6 +73,13 @@ class BootScreen(ttk.Frame):
                                 command=self._advance, state="disabled")
         self.enter.pack()
 
+        # Stays empty until initialisation finishes, then breathes so it is
+        # obvious the screen is waiting rather than stuck.
+        self.hint = tk.Label(panel, text="", bg=theme.BG, fg=theme.INK_FAINT,
+                             font=("Segoe UI", 9))
+        self.hint.pack(pady=(10, 0))
+        self._pulse = 0
+
         threading.Thread(target=self._work, daemon=True).start()
         self.after(60, self._drain)
 
@@ -84,7 +94,7 @@ class BootScreen(ttk.Frame):
             modules = all_modules()
             self._step("core online", f"{len(modules)} instruments registered", True, 12)
 
-            config = Config.from_env(cache_dir=DEFAULT_CACHE / "http")
+            config = runtime_config(cache_dir=DEFAULT_CACHE / "http")
             keys = config.available_keys
             self._step(
                 "credentials",
@@ -168,20 +178,42 @@ class BootScreen(ttk.Frame):
         self.log.configure(state="disabled")
 
     def _finish(self) -> None:
+        """Initialisation is done. Now wait - nothing advances on a timer."""
+        elapsed = time.monotonic() - self.started
+        self._write("ready", f"initialised in {elapsed:.1f}s", True)
+        self.bar["value"] = 100
+
         self.enter.configure(state="normal")
         self.enter.focus_set()
-        self.winfo_toplevel().bind("<Return>", lambda _e: self._advance())
-        # Hold the screen so the animation is actually seen on a warm start.
-        remaining = MIN_SECONDS - (time.monotonic() - self.started)
-        self.after(max(400, int(remaining * 1000)), self._advance)
+        top = self.winfo_toplevel()
+        for sequence in ("<Return>", "<KP_Enter>", "<space>"):
+            top.bind(sequence, self._advance)
+        self._breathe()
 
-    def _advance(self) -> None:
+    def _breathe(self) -> None:
+        """Fade the hint in and out so a finished screen never looks frozen."""
         if self._done:
             return
+        self._pulse = (self._pulse + 1) % 40
+        # A triangle wave: 0 -> 1 -> 0 across the cycle.
+        phase = self._pulse / 20 if self._pulse < 20 else (40 - self._pulse) / 20
+        self.hint.configure(
+            text="press  ENTER  to continue",
+            fg=theme.blend(theme.ORCHID, theme.BG, 0.55 - 0.45 * phase),
+        )
+        self.after(HINT_PULSE_MS, self._breathe)
+
+    def _advance(self, _event: object = None) -> None:
+        # Guarded because the button, three key bindings and a stray repeat can
+        # all fire this, and the console must only be built once.
+        if self._done or str(self.enter["state"]) == "disabled":
+            return
         self._done = True
-        try:
-            self.winfo_toplevel().unbind("<Return>")
-        except Exception:
-            pass
+        top = self.winfo_toplevel()
+        for sequence in ("<Return>", "<KP_Enter>", "<space>"):
+            try:
+                top.unbind(sequence)
+            except tk.TclError:
+                pass
         self.orbit.stop()
         self.on_ready(self.payload)

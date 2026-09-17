@@ -49,6 +49,101 @@ KEY_ENV = {
     "emailrep": "EMAILREP_API_KEY",
 }
 
+#: What each key actually buys, where to get one, and which modules read it.
+#:
+#: ``modules`` is the honest part: a key nothing reads is listed with an empty
+#: tuple and the UI says so, rather than implying capability the code does not
+#: have. ``tests/test_pipeline.py`` asserts every name here is a real module.
+KEY_INFO: dict[str, dict[str, Any]] = {
+    "github": {
+        "label": "GitHub",
+        "unlocks": "Raises the API limit from 60/hr to 5,000/hr. A classic token "
+                   "with NO scopes ticked is enough - this tool reads public data only.",
+        "url": "https://github.com/settings/tokens",
+        "cost": "free",
+        "modules": ("github", "gists", "email"),
+        "required": False,
+    },
+    "virustotal": {
+        "label": "VirusTotal",
+        "unlocks": "Blocklist verdicts from ~70 vendors, content categories, "
+                   "popularity rank and passive DNS for domains and IPs.",
+        "url": "https://www.virustotal.com/gui/my-apikey",
+        "cost": "free tier (~4/min, 500/day, non-commercial)",
+        "modules": ("virustotal",),
+        "required": True,
+    },
+    "securitytrails": {
+        "label": "SecurityTrails",
+        "unlocks": "Historical DNS and pre-privacy WHOIS - the registrant name and "
+                   "email a domain had before redaction.",
+        "url": "https://securitytrails.com/app/account/credentials",
+        "cost": "free tier (~50 queries/MONTH - see module_options)",
+        "modules": ("securitytrails",),
+        "required": True,
+    },
+    "abuseipdb": {
+        "label": "AbuseIPDB",
+        "unlocks": "Abuse confidence score and recent report categories for an IP.",
+        "url": "https://www.abuseipdb.com/account/api",
+        "cost": "free tier",
+        "modules": ("abuseipdb",),
+        "required": True,
+    },
+    "hibp": {
+        "label": "Have I Been Pwned",
+        "unlocks": "Per-address breach lookup. Domain-level breach data (the "
+                   "'breaches' module) already works without a key.",
+        "url": "https://haveibeenpwned.com/API/Key",
+        "cost": "paid subscription",
+        "modules": ("pwned",),
+        "required": True,
+    },
+    "shodan": {
+        "label": "Shodan",
+        "unlocks": "Nothing yet - the 'ip' module uses the keyless InternetDB "
+                   "endpoint. Setting this has no effect until a module reads it.",
+        "url": "https://account.shodan.io/",
+        "cost": "paid membership",
+        "modules": (),
+        "required": False,
+    },
+    "hunter": {
+        "label": "Hunter.io",
+        "unlocks": "Nothing yet - no module reads this key.",
+        "url": "https://hunter.io/api-keys",
+        "cost": "free tier",
+        "modules": (),
+        "required": False,
+    },
+    "numverify": {
+        "label": "NumVerify",
+        "unlocks": "Nothing yet - the 'phone' module parses offline via "
+                   "libphonenumber and needs no key.",
+        "url": "https://numverify.com/dashboard",
+        "cost": "free tier",
+        "modules": (),
+        "required": False,
+    },
+    "emailrep": {
+        "label": "EmailRep",
+        "unlocks": "Nothing yet - no module reads this key.",
+        "url": "https://emailrep.io/key",
+        "cost": "free tier",
+        "modules": (),
+        "required": False,
+    },
+}
+
+
+def key_info(name: str) -> dict[str, Any]:
+    """Metadata for a key, with safe fallbacks for one nobody documented."""
+    return KEY_INFO.get(name, {
+        "label": name, "unlocks": "", "url": "", "cost": "",
+        "modules": (), "required": False,
+    })
+
+
 #: Names people reasonably write in a config file, mapped to the short names
 #: modules actually use. Keeps a hand-written config.json from silently
 #: dropping a key because it was spelled the long way.
@@ -92,6 +187,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "api_keys": dict.fromkeys(KEY_ENV, ""),
     "modules_enabled": {},
+    #: Free-form switches a single module reads via ``config.option(name)``.
+    #: A new module can add one without touching this file's schema.
+    "module_options": {
+        "securitytrails_depth": "basic",
+    },
 }
 
 #: (minimum, maximum) for the numeric settings. Anything outside is clamped and
@@ -176,6 +276,16 @@ class Config:
 
     def set_option(self, name: str, value: Any) -> None:
         self.options[name] = value
+
+
+def runtime_config(path: Path | None = None, **overrides: Any) -> Config:
+    """The config a scan should run with: file, then environment, then overrides.
+
+    One line so the GUI and any other caller cannot accidentally skip
+    ``config.json`` the way an earlier version did by reaching straight for
+    :meth:`Config.from_env`.
+    """
+    return ConfigManager(path).load().to_config(**overrides)
 
 
 def _keys_from_env() -> dict[str, str]:
@@ -391,8 +501,18 @@ class ConfigManager:
             max_sites=int(settings.get("max_sites", 0)),
             keys=self.resolved_keys(),
             disabled_modules=self.disabled_modules,
+            options=self.module_options(),
         )
         return cfg.with_overrides(**overrides)
+
+    def module_options(self) -> dict[str, Any]:
+        """The ``module_options`` block, as a plain dict for ``Config.options``.
+
+        Command-line switches are applied on top of this by the CLI, so a flag
+        still beats the file.
+        """
+        block = self.get("module_options", {})
+        return dict(block) if isinstance(block, dict) else {}
 
     # ------------------------------------------------------------- validation
 

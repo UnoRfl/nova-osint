@@ -68,13 +68,14 @@ nova-osint/
 │   │   └── art.py           banners, spinner, per-module glyphs
 │   │
 │   ├── modules/             one file per source family - see the table below
-│   ├── gui/                 Tkinter desktop app (boot, console, orbit, theme)
+│   ├── gui/                 Tkinter desktop app (boot, console, settings, theme)
 │   └── data/                bundled site catalogue and disposable-mail list
 │
 ├── tests/
 │   ├── test_core.py         detection, registry, renderers, module helpers
 │   ├── test_pipeline.py     config, retry, normaliser, status, logging
-│   └── test_gui.py          desktop app, headless
+│   ├── test_sources.py      VirusTotal and SecurityTrails parsers, key wiring
+│   └── test_gui.py          desktop app and settings window
 │
 ├── output/                  default destination for reports (git-ignored)
 ├── ARCHITECTURE.md          this file
@@ -123,13 +124,21 @@ in `modules/` imports anything else in `modules/`.
 | `ip.py` | `ip` (geo/ASN/PTR/InternetDB/RDAP), `abuseipdb` |
 | `phone.py` | `phone` (libphonenumber when installed, country-code fallback when not) |
 | `breach.py` | `breaches` (domain-level, keyless), `pwned` (per-address, needs a key) |
+| `virustotal.py` | `virustotal` (reputation, categories, passive DNS) |
+| `securitytrails.py` | `securitytrails` (DNS history, pre-privacy WHOIS) |
 | `dorks.py` | `dorks` — builds search URLs, never runs them |
 
 ### `gui/` — the desktop app
 
-`boot.py` (animated init), `console.py` (the main window), `orbit.py` and
-`theme.py` (drawing), `app.py` (wiring). The GUI drives the same `Engine` the
-CLI does; it has no OSINT logic of its own.
+`boot.py` (animated init, waits for Enter), `console.py` (the main window),
+`settings.py` (the config editor), `orbit.py` and `theme.py` (drawing),
+`app.py` (wiring). The GUI drives the same `Engine` the CLI does and reads the
+same `config.json` through `runtime_config()`; it has no OSINT logic of its own.
+
+The settings window writes through `ConfigManager`, never straight to the file,
+so the GUI and the CLI cannot drift apart. Two rules it enforces: a stored key
+is shown as a placeholder and never rendered back, and a key present in the
+environment disables its field, because a file value could not override it.
 
 ---
 
@@ -193,6 +202,7 @@ with defaults on first run. `--config other.json` points at a different one.
 | `"api_keys": {"nonsense": "x"}` | reported as unknown, ignored |
 | `"api_keys": {"haveibeenpwned": "x"}` | accepted — long-form names are aliased |
 | `"proxies": {"socks5": ...}` | refused loudly (stdlib HTTP cannot do SOCKS) |
+| `"module_options": {...}` | passed through to `config.option(name)` for any module |
 | a key present and the file world-readable | warning telling you to `chmod 600` |
 
 ### Secrets

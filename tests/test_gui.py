@@ -181,3 +181,147 @@ def test_finishing_a_scan_lists_pivots_and_enables_export(console) -> None:
     assert all(str(b["state"]) == "normal" for b in console.export_btns)
     assert console.investigation is inv
     assert not console.scanning
+
+
+# --------------------------------------------------------------------- settings
+
+
+@pytest.fixture
+def settings(themed, tmp_path, monkeypatch):
+    """A settings window pointed at a throwaway config file."""
+    from nova_osint.core import config as config_mod
+    from nova_osint.gui import settings as settings_mod
+
+    monkeypatch.setattr(config_mod, "DEFAULT_CONFIG_PATH", tmp_path / "config.json")
+    monkeypatch.setattr(settings_mod, "ConfigManager", config_mod.ConfigManager)
+    window = settings_mod.SettingsWindow(themed)
+    themed.update_idletasks()
+    yield window
+    try:
+        window.destroy()
+    except tk.TclError:
+        pass
+
+
+def test_settings_lists_every_key(settings) -> None:
+    from nova_osint.core.config import KEY_ENV
+
+    assert set(settings.key_entries) == set(KEY_ENV)
+
+
+def test_a_stored_key_is_masked_never_rendered(themed, tmp_path, monkeypatch) -> None:
+    import json
+
+    from nova_osint.core import config as config_mod
+    from nova_osint.gui import settings as settings_mod
+
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"api_keys": {"virustotal": "the-real-secret"}}), "utf-8")
+    monkeypatch.setattr(config_mod, "DEFAULT_CONFIG_PATH", path)
+    monkeypatch.delenv("VT_API_KEY", raising=False)
+
+    window = settings_mod.SettingsWindow(themed)
+    themed.update_idletasks()
+    try:
+        shown = window.key_entries["virustotal"].get()
+        assert "the-real-secret" not in shown
+        assert shown == settings_mod.MASK
+
+        # Saving without touching the field must not wipe the stored key.
+        window._save()
+        assert json.loads(path.read_text("utf-8"))["api_keys"]["virustotal"] \
+            == "the-real-secret"
+    finally:
+        try:
+            window.destroy()
+        except tk.TclError:
+            pass
+
+
+def test_typing_a_key_replaces_it_and_saves(settings, tmp_path) -> None:
+    import json
+
+    entry = settings.key_entries["virustotal"]
+    settings._touch("virustotal")          # what a keystroke does
+    entry.insert(0, "brand-new-key")
+    settings._save()
+
+    saved = json.loads((tmp_path / "config.json").read_text("utf-8"))
+    assert saved["api_keys"]["virustotal"] == "brand-new-key"
+
+
+def test_an_environment_key_disables_the_field(themed, tmp_path, monkeypatch) -> None:
+    from nova_osint.core import config as config_mod
+    from nova_osint.gui import settings as settings_mod
+
+    monkeypatch.setattr(config_mod, "DEFAULT_CONFIG_PATH", tmp_path / "config.json")
+    monkeypatch.setenv("GITHUB_TOKEN", "from-the-environment")
+
+    window = settings_mod.SettingsWindow(themed)
+    themed.update_idletasks()
+    try:
+        entry = window.key_entries["github"]
+        assert str(entry["state"]) == "disabled"
+        assert "from-the-environment" not in entry.get()
+    finally:
+        try:
+            window.destroy()
+        except tk.TclError:
+            pass
+
+
+def test_settings_round_trip_network_values(settings, tmp_path) -> None:
+    import json
+
+    settings.field_vars["settings.timeout"].set("25")
+    settings.field_vars["settings.max_concurrent_tasks"].set("8")
+    settings.toggle_vars["settings.cache_enabled"].set(False)
+    settings.st_depth.set("full")
+    settings._save()
+
+    saved = json.loads((tmp_path / "config.json").read_text("utf-8"))
+    assert saved["settings"]["timeout"] == 25.0
+    assert saved["settings"]["max_concurrent_tasks"] == 8
+    assert saved["settings"]["cache_enabled"] is False
+    assert saved["module_options"]["securitytrails_depth"] == "full"
+
+
+def test_a_non_numeric_setting_is_refused_not_written(settings, tmp_path) -> None:
+    import tkinter.messagebox as mb
+
+    warned: list[tuple] = []
+    original = mb.showwarning
+    mb.showwarning = lambda *a, **kw: warned.append(a)
+    try:
+        settings.field_vars["settings.timeout"].set("banana")
+        settings._save()
+    finally:
+        mb.showwarning = original
+
+    assert warned, "a bad number must be reported"
+    assert not (tmp_path / "config.json").exists() or \
+        "banana" not in (tmp_path / "config.json").read_text("utf-8")
+
+
+def test_disabling_a_module_is_persisted(settings, tmp_path) -> None:
+    import json
+
+    settings.module_vars["dorks"].set(False)
+    settings._save()
+    saved = json.loads((tmp_path / "config.json").read_text("utf-8"))
+    assert saved["modules_enabled"]["dorks"] is False
+    assert saved["modules_enabled"]["dns"] is True
+
+
+def test_console_opens_settings_and_reloads(console, themed, tmp_path, monkeypatch) -> None:
+    from nova_osint.core import config as config_mod
+
+    monkeypatch.setattr(config_mod, "DEFAULT_CONFIG_PATH", tmp_path / "config.json")
+    console.open_settings()
+    themed.update_idletasks()
+
+    window = next(w for w in themed.winfo_children()
+                  if w.winfo_class() == "Toplevel" and "Settings" in w.title())
+    window._save()
+    themed.update_idletasks()
+    assert "settings saved" in console.status["text"]

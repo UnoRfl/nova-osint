@@ -14,7 +14,7 @@
 
 **One target in, every public source out.**
 
-17 modules · 480+ username platforms · desktop app + CLI · passive by default
+19 modules · 480+ username platforms · desktop app + CLI · passive by default
 
 </div>
 
@@ -61,9 +61,15 @@ Or double-click **`NOVA.bat`** in the project folder — or `dist/NOVA.exe` if y
 built the standalone binary (see below).
 
 It opens on a boot screen with the orbit animation while it does real work:
-importing the module registry, reading the environment for keys, opening the
-HTTP transport, pulling the 480-site catalogue and probing every upstream
-source. If crt.sh is down you find out there, not halfway through a scan.
+importing the module registry, reading the configuration and environment for
+keys, opening the HTTP transport, pulling the 480-site catalogue and probing
+every upstream source. If crt.sh is down you find out there, not halfway
+through a scan.
+
+**The boot screen waits for you.** It does not advance on a timer - it sits
+there with the log on screen until you press Enter (or Space, or the button),
+so a warning about a dead source or a rejected key cannot scroll past before
+you have read it.
 
 Then the console:
 
@@ -78,6 +84,10 @@ Then the console:
   row with a URL to open it.
 - **Pivots are one double-click away** from becoming the next scan.
 - **Export** to HTML, JSON, CSV or Markdown from the status bar.
+- **Settings** (bottom of the sidebar) edits the same `config.json` the CLI
+  reads: API keys, network behaviour and which instruments are enabled. A
+  stored key is never rendered back into the field, and a key set in the
+  environment shows as locked, because a file value could not override it.
 
 `--no-art` on the CLI has a GUI equivalent: nothing. The animation is 2.6
 seconds and then it gets out of the way.
@@ -118,6 +128,8 @@ binary in place while still exiting 0.
 | `wayback` | domain | first/last capture, archived files, historic parameters | – |
 | `ip` | IP | geo, ASN, rDNS, Shodan InternetDB, netblock | – |
 | `abuseipdb` | IP | abuse confidence and report categories | AbuseIPDB |
+| `virustotal` | domain, IP | blocklist verdicts, categories, **passive DNS** | VirusTotal |
+| `securitytrails` | domain | historical DNS and **pre-privacy WHOIS** | SecurityTrails |
 | `phone` | phone | validity, region, carrier, line type, timezone | – |
 | `dorks` | all | targeted search-engine and GitHub code-search queries | – |
 
@@ -265,8 +277,25 @@ export GITHUB_TOKEN=...        # 60/hr -> 5000/hr; a no-scope classic token is e
 nova scan someuser --only github
 ```
 
-Keys can also go in the `api_keys` block of `config.json`, which is written
-`0600` where the OS supports it. Wherever they come from, a key never leaves
+Three keys do something today, and the tool tells you which:
+
+| Key | Unlocks | Cost |
+|---|---|---|
+| `GITHUB_TOKEN` | 60 -> 5,000 req/hr for `github`, `gists`, `email` | free |
+| `VT_API_KEY` | `virustotal`: blocklist verdicts + passive DNS | free tier |
+| `ABUSEIPDB_API_KEY` | `abuseipdb`: IP abuse score | free tier |
+| `SECURITYTRAILS_API_KEY` | `securitytrails`: DNS and WHOIS history | free tier (~50/**month**) |
+| `HIBP_API_KEY` | `pwned`: per-address breach lookup | paid |
+
+`SHODAN_API_KEY`, `HUNTER_API_KEY`, `NUMVERIFY_API_KEY` and `EMAILREP_API_KEY`
+are declared but **no module reads them yet** - setting one does nothing. The
+settings window and `.env.example` both say so rather than implying otherwise.
+
+Easiest route: open the desktop app and press **Settings**. Every key has its
+own row with what it unlocks, what it costs, which modules use it, and a
+**Get a key** button that opens the right page. Keys can also go in the
+`api_keys` block of `config.json`, which is written `0600` where the OS
+supports it. Wherever they come from, a key never leaves
 the process except as a request header: `nova config show` masks them, the
 logger redacts them, reports never contain them, and responses to authenticated
 requests are never written to the disk cache.

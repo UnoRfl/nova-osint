@@ -22,12 +22,13 @@ from tkinter import filedialog, messagebox, ttk
 
 from ..core import report as reporting
 from ..core.art import glyph
-from ..core.config import KEY_ENV, Config
+from ..core.config import Config, runtime_config
 from ..core.engine import Engine
 from ..core.models import Investigation, ScanResult, Severity, TargetType
 from ..core.registry import detect_type, modules_for
 from . import theme
 from .orbit import OrbitCanvas
+from .settings import SettingsWindow
 
 PLACEHOLDER = "domain, email, username, IP, phone or URL"
 GLYPH_FONT = ("Segoe UI Symbol", 10)
@@ -54,7 +55,7 @@ TYPE_COLOUR = {
 class ConsoleScreen(ttk.Frame):
     def __init__(self, master, boot: dict) -> None:
         super().__init__(master, style="Space.TFrame")
-        self.config_obj: Config = boot.get("config") or Config.from_env()
+        self.config_obj: Config = boot.get("config") or runtime_config()
         self.queue: queue.Queue = queue.Queue()
         self.investigation: Investigation | None = None
         self.scanning = False
@@ -162,7 +163,7 @@ class ConsoleScreen(ttk.Frame):
         opts = tk.Frame(side, bg=theme.BG_PANEL)
         opts.grid(row=5, column=0, sticky="ew", pady=(8, 0))
 
-        self.passive = tk.BooleanVar(value=False)
+        self.passive = tk.BooleanVar(value=self.config_obj.passive_only)
         self.verify = tk.BooleanVar(value=True)
         self.pivot = tk.BooleanVar(value=False)
         self.nsfw = tk.BooleanVar(value=False)
@@ -180,7 +181,7 @@ class ConsoleScreen(ttk.Frame):
         cap.grid(row=6, column=0, sticky="ew", pady=(14, 0))
         tk.Label(cap, text="Max sites", bg=theme.BG_PANEL, fg=theme.INK_DIM,
                  font=("Segoe UI", 9)).pack(side="left")
-        self.max_sites = tk.StringVar(value="0")
+        self.max_sites = tk.StringVar(value=str(self.config_obj.max_sites))
         tk.Spinbox(cap, from_=0, to=500, increment=25, width=6,
                    textvariable=self.max_sites, bg=theme.BG_INPUT, fg=theme.INK,
                    buttonbackground=theme.BG_RAISED, relief="flat", bd=0,
@@ -193,18 +194,44 @@ class ConsoleScreen(ttk.Frame):
                                                       pady=(5, 0))
 
         self._section(side, "API KEYS", 8, top=14)
-        keys = self.config_obj.available_keys
-        tk.Label(
-            side,
-            text=", ".join(keys) if keys
-            else "none set — key-free modules still run.\n\nExport "
-                 + ", ".join(sorted(KEY_ENV.values())[:2]) + " …\nbefore launching to add more.",
-            bg=theme.BG_PANEL, fg=theme.OK if keys else theme.INK_FAINT,
-            font=("Segoe UI", 8), wraplength=200, justify="left",
-        ).grid(row=10, column=0, sticky="w", pady=(6, 0))
+        self.keys_label = tk.Label(
+            side, bg=theme.BG_PANEL, font=("Segoe UI", 8),
+            wraplength=200, justify="left",
+        )
+        self.keys_label.grid(row=10, column=0, sticky="w", pady=(6, 8))
+
+        ttk.Button(side, text="⚙   Settings", command=self.open_settings).grid(
+            row=11, column=0, sticky="ew", pady=(2, 0))
+        self._refresh_keys_label()
 
         theme.Rule(self, theme.LINE).place(in_=side, relx=1.0, rely=0, relheight=1.0,
                                            width=1, anchor="ne")
+
+    # ---------------------------------------------------------------- settings
+
+    def open_settings(self) -> None:
+        """Open the settings window; reload everything it touched on save."""
+        SettingsWindow(self.winfo_toplevel(), on_saved=self._settings_saved)
+
+    def _settings_saved(self) -> None:
+        self.config_obj = runtime_config()
+        self._refresh_keys_label()
+        self.max_sites.set(str(self.config_obj.max_sites))
+        self.passive.set(self.config_obj.passive_only)
+        # A key that was just added can un-skip an instrument, and a module
+        # disabled in the file has to disappear, so force a full rebuild by
+        # clearing the cached type first.
+        self.current_type = None
+        self._on_target_change()
+        self.status.configure(text="settings saved · instruments reloaded",
+                              fg=theme.OK)
+
+    def _refresh_keys_label(self) -> None:
+        keys = self.config_obj.available_keys
+        self.keys_label.configure(
+            text=", ".join(keys) if keys else "none set — key-free instruments still run",
+            fg=theme.OK if keys else theme.INK_FAINT,
+        )
 
     def _section(self, parent, text: str, row: int, top: int = 0) -> None:
         holder = tk.Frame(parent, bg=theme.BG_PANEL)
@@ -433,7 +460,9 @@ class ConsoleScreen(ttk.Frame):
         self._log_raw(f"{ttype.value}", ("run",))
         self._log_raw(f"  ·  {len(chosen)} instruments\n\n", ("plain",))
 
-        cfg = Config.from_env(
+        # config.json first, then the switches on this screen. Using
+        # Config.from_env here would silently ignore the settings window.
+        cfg = runtime_config(
             passive_only=self.passive.get(),
             max_sites=int(self.max_sites.get() or 0),
         )

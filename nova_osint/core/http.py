@@ -66,6 +66,10 @@ _WORKER_PREFIX = "nova-http"
 _AUTH_HEADERS = frozenset({
     "authorization", "cookie", "hibp-api-key", "key", "x-api-key",
     "x-auth-token", "api-key", "token",
+    # Every service spells it differently: VirusTotal uses x-apikey (no
+    # hyphen), SecurityTrails uses a bare APIKEY. Miss one and that service's
+    # authenticated responses land in the shared on-disk cache.
+    "x-apikey", "apikey",
 })
 
 T = TypeVar("T")

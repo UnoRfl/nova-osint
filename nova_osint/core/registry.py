@@ -137,7 +137,9 @@ def import_modules() -> None:
         github,
         ip,
         phone,
+        securitytrails,
         username,
+        virustotal,
         web,
     )
 
