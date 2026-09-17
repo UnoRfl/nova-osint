@@ -149,6 +149,16 @@ def render_console(inv: Investigation, *, verbose: bool = False,
             box=box.ROUNDED,
         )
     )
+    if inv.resolution is not None:
+        # Before the module output, always. The reader asked "which of these is
+        # them?" and every table below is working, not answer.
+        from .identity import render_text as identity_text
+
+        console.print(Panel(
+            identity_text(inv.resolution),
+            title="[bold]◈ which one is your subject[/bold]",
+            border_style=art.NEBULA[3], box=box.ROUNDED))
+
     if not inv.findings:
         console.print(art.render(art.QUIET_SKY), end="")
 
@@ -391,6 +401,11 @@ def render_markdown(inv: Investigation) -> str:
         f"| Modules skipped | {s['skipped']} |",
         "",
     ]
+    if inv.resolution is not None:
+        from .identity import render_markdown as identity_md
+
+        out += ["## Which one is your subject", "",
+                identity_md(inv.resolution)]
     out += _markdown_profile(inv)
     rows = status_rows(inv)
     if rows:

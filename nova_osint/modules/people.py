@@ -176,6 +176,13 @@ class WikidataModule(Module):
         subject = Entity.make(EntityType.PERSON, f"{label} ({qid})", wikidata=qid)
         if subject is None:
             return
+        # Findings are prefixed with the *disambiguated* name, not the bare
+        # label. The entity above is keyed by Q-id for exactly the reason in
+        # the comment - and prefixing the findings with the label undid it one
+        # line later: three Wikidata items sharing a label produced findings
+        # that the biography layer merged back into one person, born in two
+        # years and holding three jobs. The prefix is what splits them.
+        who = subject.display
         result.nodes.append(subject)
         if result.subject is not None and subject.eid != result.subject.eid:
             result.link(result.subject, subject, "candidate-for", "name-similarity",
@@ -187,7 +194,7 @@ class WikidataModule(Module):
                     other = self._label(value["id"])
                     if not other:
                         continue
-                    result.add(f"{label}: {human}", other, source="wikidata", url=url)
+                    result.add(f"{who}: {human}", other, source="wikidata", url=url)
                     if etype is None:
                         continue
                     node = Entity.make(etype, other)
@@ -199,16 +206,16 @@ class WikidataModule(Module):
                         result.link(subject, node, relation, evidence, url=url,
                                     detail=f"Wikidata {human}")
                 elif isinstance(value, dict) and "time" in value:
-                    result.add(f"{label}: {human}", str(value["time"])[1:11],
+                    result.add(f"{who}: {human}", str(value["time"])[1:11],
                                source="wikidata", url=url)
                 elif isinstance(value, str):
-                    result.add(f"{label}: {human}", value, source="wikidata", url=url)
+                    result.add(f"{who}: {human}", value, source="wikidata", url=url)
 
         for prop, human, etype in WD_IDENTIFIERS:
             for value in _claim_values(claims.get(prop)):
                 if not isinstance(value, str):
                     continue
-                result.add(f"{label}: {human}", value, source="wikidata", url=url,
+                result.add(f"{who}: {human}", value, source="wikidata", url=url,
                            severity=Severity.HIGH)
                 if etype is None:
                     continue

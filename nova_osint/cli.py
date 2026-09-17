@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 
 from .core import art
+from .core import brief as briefing
 from .core import report as reporting
 from .core.config import (
     DEFAULT_CACHE,
@@ -87,7 +88,21 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command")
 
     scan = sub.add_parser("scan", help="run a scan against one target")
-    scan.add_argument("target", help="domain, email, username, IP, phone number or URL")
+    scan.add_argument("target", nargs="?", default=None,
+                      help="domain, email, username, IP, phone number or URL. "
+                           "Optional when the whole subject is given with --know")
+    # The brief. Everything the user already knows: extra seeds to scan from,
+    # and - the part that matters - the evidence that tells the results apart.
+    scan.add_argument("-K", "--know", action="append", default=[], metavar="FACT=VALUE",
+                      help="something you already know about the subject, e.g. "
+                           "-K city='Kuala Lumpur' -K employer=Acme -K dob=1971. "
+                           "Repeatable. A '?' on the key ("
+                           "-K 'city?=KL') marks it uncertain, so it is still "
+                           "tested but cannot bury a candidate on its own")
+    scan.add_argument("--brief", metavar="FILE",
+                      help="read the same facts from a JSON or YAML file")
+    scan.add_argument("--subject", choices=["person", "org"], default="person",
+                      help="what the subject is (default: person)")
     scan.add_argument("-t", "--type", choices=[t.value for t in TargetType if t != TargetType.UNKNOWN],
                       help="force the target type instead of auto-detecting")
     scan.add_argument("-o", "--output", type=Path,
@@ -372,6 +387,41 @@ def _resolve_output(path: Path, cfg: Config) -> Path:
     return path
 
 
+def _build_brief(args: argparse.Namespace):
+    """Assemble the brief from --brief, --know and the positional target.
+
+    The positional target is folded in as a claim of its own, because it *is*
+    one: a user who types an address and then adds a city has told NOVA two
+    things about one person, and the resolver has to see both or the address -
+    the strongest evidence in the room - never gets to confirm anything.
+    """
+    brief = briefing.Brief(subject_kind=args.subject)
+    if getattr(args, "brief", None):
+        brief = briefing.load(args.brief)
+        brief.subject_kind = args.subject
+    for pair in getattr(args, "know", []) or []:
+        kind, value, certain = briefing.parse_pair(pair)
+        brief.add(kind, value, certain=certain)
+    if args.target:
+        kind = _KIND_FOR_TYPE.get(
+            TargetType(args.type) if args.type else detect_type(args.target))
+        if kind is not None:
+            brief.add(kind, args.target)
+    return brief.expand() if brief else brief
+
+
+#: The claim a positional target amounts to.
+_KIND_FOR_TYPE = {
+    TargetType.DOMAIN: briefing.ClaimKind.DOMAIN,
+    TargetType.EMAIL: briefing.ClaimKind.EMAIL,
+    TargetType.USERNAME: briefing.ClaimKind.USERNAME,
+    TargetType.PERSON: briefing.ClaimKind.NAME,
+    TargetType.PHONE: briefing.ClaimKind.PHONE,
+    TargetType.URL: briefing.ClaimKind.URL,
+    TargetType.IP: briefing.ClaimKind.IP,
+}
+
+
 def _budget(args: argparse.Namespace):
     """Turn --budget/--depth/--max-entities into an expansion budget."""
     from .core.engine import Budget
@@ -424,6 +474,24 @@ def _save_case(store, args: argparse.Namespace, inv) -> str:
 
 def cmd_scan(args: argparse.Namespace) -> int:
     manager, cfg = load_config(args)
+    try:
+        brief = _build_brief(args)
+    except briefing.BriefError as exc:
+        print(exc, file=sys.stderr)
+        return EXIT_USAGE
+
+    if not args.target:
+        # No positional target, so the brief has to supply one. Its strongest
+        # identifier leads, which is also the one worth spending first.
+        seeds = brief.seeds if brief else []
+        if not seeds:
+            print("give a target, or describe the subject with --know "
+                  "(for example: nova scan -K name='Ada Lovelace' -K born=1815)",
+                  file=sys.stderr)
+            return EXIT_USAGE
+        args.target = seeds[0].value
+        args.type = args.type or briefing.SEEDABLE[seeds[0].kind].value
+
     ttype = TargetType(args.type) if args.type else detect_type(args.target)
     if ttype == TargetType.UNKNOWN:
         print(f"could not work out what '{args.target}' is; pass --type", file=sys.stderr)
@@ -480,11 +548,20 @@ def cmd_scan(args: argparse.Namespace) -> int:
                   f"modules: {', '.join(m.name for m in runnable)}", file=sys.stderr)
             for name, reason in skipped:
                 print(f"  skipping {name} ({reason})", file=sys.stderr)
+            if len(brief) > 1:
+                print(f"brief: {len(brief)} fact(s) - "
+                      + ", ".join(f"{c.kind.value}={c.raw}" for c in brief.claims),
+                      file=sys.stderr)
             print(file=sys.stderr)
 
-        if args.expand:
+        # A brief with more than the target in it means cross-checking, which
+        # only the expanding walk can do: it is the one path that puts every
+        # seed into a single graph where the evidence can converge.
+        resolving = len(brief) > 1
+        if args.expand or resolving:
             inv = engine.investigate(args.target, only, exclude, ttype,
-                                     budget=_budget(args))
+                                     budget=_budget(args),
+                                     brief=brief if resolving else None)
         else:
             inv = engine.scan(args.target, only, exclude, ttype)
         pivot_scans = []

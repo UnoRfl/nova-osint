@@ -36,6 +36,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
+from .brief import SEEDABLE as SEEDABLE_TYPES
 from .config import Config
 from .entities import FROM_TARGET_TYPE, TO_TARGET_TYPE, Entity, EntityType
 from .graph import EntityGraph, Observation
@@ -480,6 +481,7 @@ class Engine:
         target_type: TargetType | None = None,
         budget: Budget | None = None,
         on_result: Callable[[ScanResult], None] | None = None,
+        brief: Any = None,
     ) -> Investigation:
         """Scan the target, then keep going along whatever it connects to.
 
@@ -492,12 +494,19 @@ class Engine:
         accordingly.
 
         The walk stops on whichever budget limit binds first, and says which.
+
+        A ``brief`` turns this from one walk into several converging ones. Every
+        identifier in it becomes a seed, all of them expanding into **one**
+        graph, so an account reached from an address and the same account
+        reached from a name land on one node and their evidence adds. That
+        convergence is the entire point: one seed can only produce candidates,
+        and it takes a second to tell them apart.
         """
         budget = budget or Budget()
         started = time.monotonic()
         ttype = target_type or detect_type(target)
         seed = entity_for(target, ttype)
-        inv = Investigation(target=target, target_type=ttype)
+        inv = Investigation(target=target, target_type=ttype, brief=brief)
         graph = EntityGraph(seed)
         inv.graph = graph
         expansion = Expansion()
@@ -509,7 +518,23 @@ class Engine:
         done: set[tuple[str, str]] = set()
 
         queue: list[Entity] = [seed] if seed is not None else []
-        if seed is None:
+        if brief is not None:
+            # Every identifier in the brief starts the walk, strongest first,
+            # so a budget that runs out spends itself on the address lookup
+            # rather than on the name search that was always going to return
+            # forty people. The seed the user typed keeps its place at the
+            # front; the rest are added in the brief's own order.
+            seen_eids = {seed.eid} if seed is not None else set()
+            for claim in brief.seeds:
+                ent = entity_for(claim.value, SEEDABLE_TYPES[claim.kind])
+                if ent is None or ent.eid in seen_eids:
+                    continue
+                seen_eids.add(ent.eid)
+                graph.add(ent, score=1.0 if not claim.derived else 0.9)
+                queue.append(ent)
+            log.info("brief supplies %d seed(s): %s", len(queue),
+                     ", ".join(e.value for e in queue))
+        if not queue:
             log.warning("cannot expand from %s: unrecognised target type", target)
 
         while queue:
@@ -559,6 +584,10 @@ class Engine:
         inv.results.sort(key=lambda r: (r.target, r.module))
         inv.requests = list(self._ledger)
         inv.expansion = expansion
+        if brief is not None:
+            from .identity import resolve
+
+            inv.resolution = resolve(inv, brief)
         inv.finish()
         log.info(
             "investigation finished in %.1fs: %d entities, %d edges, %d finding(s), "

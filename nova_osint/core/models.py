@@ -279,6 +279,14 @@ class Investigation:
     #: An ``engine.Expansion`` when the run walked the frontier, else ``None``.
     #: Carries which budget limit stopped the walk and what was left unexplored.
     expansion: Any = None
+    #: A ``brief.Brief`` when the run was given one: everything the user already
+    #: knew about the subject, which seeds the scan and then discriminates
+    #: between what it finds. ``Any`` to keep this module import-cycle free.
+    brief: Any = None
+    #: An ``identity.Resolution`` - the candidates ranked against that brief.
+    #: Only ever set when ``brief`` is, because with one seed there is nothing
+    #: to resolve against and a ranking would be invented rather than computed.
+    resolution: Any = None
 
     def finish(self) -> Investigation:
         """Freeze the clock.
@@ -351,4 +359,8 @@ class Investigation:
             out["graph"] = self.graph.to_dict()
         if self.expansion is not None:
             out["expansion"] = self.expansion.to_dict()
+        if self.brief is not None:
+            out["brief"] = self.brief.to_dict()
+        if self.resolution is not None:
+            out["resolution"] = self.resolution.to_dict()
         return out
