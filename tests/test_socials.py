@@ -9,7 +9,13 @@ from __future__ import annotations
 
 import pytest
 
-from nova_osint.core.models import Investigation, ScanResult, Severity, TargetType
+from nova_osint.core.models import (
+    Confidence,
+    Investigation,
+    ScanResult,
+    Severity,
+    TargetType,
+)
 from nova_osint.core.socials import (
     PLATFORMS,
     UNCHECKABLE,
@@ -239,3 +245,28 @@ def test_a_non_person_target_falls_back_to_a_discovered_handle():
     inv = Investigation(target="example.com", target_type=TargetType.DOMAIN).finish()
     accounts = collect(inv, subject_handles={"acmecorp"})
     assert any("acmecorp" in a.url for a in accounts if a.platform == "Facebook")
+
+
+def test_a_name_match_is_not_a_confirmed_account() -> None:
+    """"Is this account real?" is not the question a reader is asking.
+
+    A Bluesky name search returns accounts that certainly exist and may belong
+    to someone else entirely. Filing those under "verified by a lookup" put a
+    stranger's profile in the subject's account list with a tick beside it.
+    """
+    from nova_osint.core.socials import collect
+
+    inv = Investigation(target="Ada Lovelace", target_type=TargetType.PERSON)
+    res = ScanResult(module="bluesky", target="Ada Lovelace",
+                     target_type=TargetType.PERSON)
+    res.add("bluesky @someone.bsky.social", "Ada Lovelace - display name matches",
+            source="bluesky", url="https://bsky.app/profile/someone.bsky.social",
+            confidence=Confidence.POSSIBLE)
+    res.add("bluesky @real.bsky.social", "the subject's own profile",
+            source="bluesky", url="https://bsky.app/profile/real.bsky.social",
+            confidence=Confidence.CONFIRMED)
+    inv.results = [res]
+
+    by_handle = {a.handle: a.basis for a in collect(inv)}
+    assert by_handle["someone.bsky.social"] == "possible"
+    assert by_handle["real.bsky.social"] == "confirmed"

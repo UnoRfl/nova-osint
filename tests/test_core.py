@@ -373,3 +373,73 @@ def test_bundled_site_list_is_wellformed() -> None:
         slots = f"{meta['url']}{meta.get('urlProbe', '')}{meta.get('request_payload', '')}"
         assert "{}" in slots, name
         assert meta["errorType"] in {"status_code", "message", "response_url"}, name
+
+
+# ---------------------------------------------------------------------------
+# no value a user can type may stop a request being made
+# ---------------------------------------------------------------------------
+
+
+def test_requote_escapes_what_cannot_travel_on_the_wire() -> None:
+    """A space in a target used to raise InvalidURL before a byte was sent.
+
+    Eight modules then reported that as their own failure, and the username
+    sweep announced 405 sites "unreachable" without having asked one of them.
+    """
+    from nova_osint.core.http import requote
+
+    assert requote("https://github.com/Ryan Rafael.keys") == (
+        "https://github.com/Ryan%20Rafael.keys")
+    assert requote("https://npm.example/-/v1/search?text=maintainer:A B&size=2") == (
+        "https://npm.example/-/v1/search?text=maintainer:A%20B&size=2")
+
+
+def test_requote_is_idempotent_so_encoded_urls_survive() -> None:
+    from nova_osint.core.http import requote
+
+    once = requote("https://api.github.com/users/a%20b")
+    assert once == "https://api.github.com/users/a%20b"
+    assert requote(once) == once
+
+
+def test_requote_leaves_the_host_alone() -> None:
+    """A non-ASCII host needs IDNA, not percent-encoding.
+
+    Escaping it would turn a valid internationalised domain into a lookup that
+    cannot succeed, which is worse than the crash it was meant to prevent.
+    """
+    from nova_osint.core.http import requote
+
+    assert requote("https://xn--bcher-kva.example/p") == (
+        "https://xn--bcher-kva.example/p")
+
+
+def test_a_target_that_cannot_be_its_forced_type_is_refused_not_attempted() -> None:
+    """--type username on a name with a space must skip, not crash eight modules."""
+    from nova_osint.core.registry import shape_problem
+
+    problem = shape_problem("Ryan Rafael", TargetType.USERNAME)
+    assert problem is not None
+    assert "person" in problem  # and it says what the value does look like
+    assert shape_problem("ryanrafael", TargetType.USERNAME) is None
+    # Types whose values are messy by nature are left alone.
+    assert shape_problem("Ryan Rafael", TargetType.PERSON) is None
+
+
+def test_the_banner_version_matches_the_package() -> None:
+    """The splash said v1.0.0 for the whole of 1.1.0 - the number a user quotes."""
+    import nova_osint
+    from nova_osint.core import art
+
+    assert nova_osint.__version__ == art.VERSION
+
+
+def test_the_target_is_never_its_own_pivot() -> None:
+    """A domain is a SAN on its own certificate, and --pivot follows this list."""
+    inv = Investigation(target="example.com", target_type=TargetType.DOMAIN)
+    res = ScanResult(module="vt", target="example.com",
+                     target_type=TargetType.DOMAIN)
+    res.pivot("example.com", TargetType.DOMAIN, "SAN on the TLS certificate")
+    res.pivot("mail.example.com", TargetType.DOMAIN, "SAN on the TLS certificate")
+    inv.results = [res]
+    assert [p.target for p in inv.pivots] == ["mail.example.com"]

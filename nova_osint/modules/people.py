@@ -40,6 +40,7 @@ than treating an edge as an edge.
 
 from __future__ import annotations
 
+import re
 import urllib.parse
 from typing import Any
 
@@ -256,6 +257,40 @@ def _claim_values(claims: Any) -> list[Any]:
 
 BSKY = "https://public.api.bsky.app/xrpc"
 
+#: Rank given to a search result that shares no word with the name searched
+#: for. Anything at this rank is the search engine being generous, not a lead.
+_RANK_UNRELATED = 3
+
+
+def _name_rank(wanted: str, display: str) -> tuple[int, str]:
+    """How well a display name matches the name searched for, and in what way.
+
+    Returned as ``(rank, why)`` so the rank orders the list and the *why* is
+    printed beside the account. A reader given ten names and no reason to
+    prefer any of them will either take the first or take all ten; both are
+    worse than being told which one matched and how.
+
+    Word-level rather than character-level on purpose: an edit distance makes
+    "Yana" a near-match for "Iana" and calls that a lead, when what actually
+    identifies a person here is carrying their name.
+    """
+    want = {w for w in _words(wanted) if w}
+    have = {w for w in _words(display) if w}
+    if not want or not have:
+        return _RANK_UNRELATED, "no display name to compare"
+    if " ".join(_words(display)) == " ".join(_words(wanted)):
+        return 0, "display name matches exactly"
+    if want <= have:
+        return 1, "display name contains the whole name"
+    shared = want & have
+    if shared:
+        return 2, f"shares only {', '.join(sorted(shared))}"
+    return _RANK_UNRELATED, "shares no part of the name"
+
+
+def _words(text: str) -> list[str]:
+    return [w for w in re.split(r"[^\w']+", text.casefold()) if w]
+
 
 @register
 class BlueskyModule(Module):
@@ -282,28 +317,54 @@ class BlueskyModule(Module):
             result.degrade(ModuleStatus.UNAVAILABLE, "bluesky did not answer with JSON")
             return
         actors = [a for a in data.get("actors", []) if isinstance(a, dict)]
-        exact = [a for a in actors
-                 if (a.get("displayName") or "").casefold() == name.casefold()]
         if not actors:
             result.add("bluesky", f"no account with a display name like '{name}'",
                        source="bluesky")
             return
-        result.add("bluesky candidates", [
-            f"@{a.get('handle')} - {a.get('displayName') or 'no display name'}"
-            for a in actors[:10]], source="bluesky", confidence=Confidence.POSSIBLE,
-            severity=Severity.NOTABLE)
+
+        # Bluesky's actor search is fuzzy and returns ten results whatever you
+        # ask it. Searching a name used to list all ten in one cell as equal
+        # "candidates" - so a scan for "Ryan Rafael" offered Ryan Reynolds and
+        # a journalist sharing no part of the name, at the same billing as the
+        # account whose display name matched exactly. Rank them, say why each
+        # one is there, and keep the ones that share nothing out of the graph.
+        ranked = sorted(
+            ((_name_rank(name, a.get("displayName") or ""), a) for a in actors),
+            key=lambda pair: pair[0][0],
+        )
+        plausible = [(rank, a) for rank, a in ranked if rank[0] < _RANK_UNRELATED]
+        unrelated = len(ranked) - len(plausible)
+
+        for (_score, why), actor in plausible:
+            handle = actor.get("handle")
+            if not handle:
+                continue
+            display = actor.get("displayName") or "no display name"
+            result.add(f"bluesky @{handle}", f"{display} - {why}",
+                       source="bluesky", url=f"https://bsky.app/profile/{handle}",
+                       confidence=Confidence.POSSIBLE,
+                       severity=Severity.NOTABLE if _score == 0 else Severity.INFO)
+        if unrelated:
+            result.add("bluesky search noise",
+                       f"{unrelated} further result(s) share no part of the name "
+                       "and were not followed", source="bluesky")
+
+        exact = [a for rank, a in plausible if rank[0] == 0]
         if len(exact) > 1:
             result.add("ambiguity", f"{len(exact)} Bluesky accounts use exactly this "
                                     "display name; a display name is not unique",
                        source="bluesky", confidence=Confidence.POSSIBLE)
-        for actor in (exact or actors)[:5]:
+        # Only accounts whose display name actually carries the name searched
+        # for become entities. A partial match is worth printing so the reader
+        # can judge it; it is not worth spending the rest of the scan on.
+        for (_score, why), actor in [p for p in plausible if p[0][0] <= 1][:5]:
             handle = actor.get("handle")
             if not handle:
                 continue
             result.entity(EntityType.USERNAME, handle, relation="possible-account",
                           evidence="name-similarity",
                           url=f"https://bsky.app/profile/{handle}",
-                          detail=f"display name '{actor.get('displayName')}'")
+                          detail=f"display name '{actor.get('displayName')}' ({why})")
             self._stem(handle, actor, result)
 
     def _stem(self, handle: str, actor: dict, result: ScanResult) -> None:

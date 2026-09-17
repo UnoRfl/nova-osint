@@ -220,9 +220,29 @@ BSKY_SEARCH = {"actors": [
 def test_display_name_search_returns_every_candidate_and_flags_the_clash():
     http = FakeHttp({"searchActors": _json(BSKY_SEARCH)})
     res = _run(BlueskyModule, http, "Matthew Prince", TargetType.PERSON)
-    assert "bluesky candidates" in _labels(res)
+    # One row per candidate, not ten crammed into one cell, and each says why
+    # it is there. A reader given a list with no reasons takes the first.
+    labels = _labels(res)
+    assert "bluesky @eastdakota.com" in labels
+    assert "bluesky @the-mrp.bsky.social" in labels
     note = next(f for f in res.findings if f.label == "ambiguity")
     assert "2 Bluesky accounts use exactly this display name" in str(note.value)
+
+
+def test_search_results_sharing_no_part_of_the_name_are_counted_not_listed():
+    """Bluesky's search is fuzzy and always returns a full page.
+
+    Listing its misses beside the real matches is how a scan for one person
+    ends up offering a stranger at equal billing. They are counted so the
+    reader knows the search was wider than the table, and dropped from the
+    graph so the rest of the scan is not spent on them.
+    """
+    http = FakeHttp({"searchActors": _json(BSKY_SEARCH)})
+    res = _run(BlueskyModule, http, "Matthew Prince", TargetType.PERSON)
+    assert "bluesky @someone.bsky.social" not in _labels(res)
+    noise = next(f for f in res.findings if f.label == "bluesky search noise")
+    assert "1 further result" in str(noise.value)
+    assert "someone.bsky.social" not in {e.value for e in res.nodes}
 
 
 def test_the_handle_stem_is_emitted_so_sources_can_corroborate():

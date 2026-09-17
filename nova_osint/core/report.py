@@ -313,6 +313,61 @@ def render_csv(inv: Investigation) -> str:
     return buf.getvalue()
 
 
+#: Targets that are a *who* rather than a *what*, and so get the dossier
+#: treatment at the top of the report.
+_PERSONAL = ("person", "username", "email")
+
+
+def _markdown_profile(inv: Investigation) -> list[str]:
+    """Who the subject is, before the module-by-module dump.
+
+    The markdown export was the one format that never got the investigation
+    layer: it still rendered the flat "here is what each module said" report
+    from before any of it existed. A person scan exported to a file therefore
+    arrived with no biography, no account list and no candidate warning - the
+    three things that make it a dossier rather than a log.
+    """
+    if inv.target_type.value not in _PERSONAL:
+        return []
+    from .biography import render_markdown as bio_md
+    from .profile import build as build_profile
+    from .socials import render_markdown as socials_md
+
+    try:
+        profile = build_profile(inv)
+    except Exception:  # pragma: no cover - a profile must never lose the report
+        return []
+
+    out: list[str] = []
+    if profile.ambiguities or profile.candidates:
+        # First, and before any fact about any of them. A report that opens
+        # with an employer has already told the reader it knows who this is.
+        out += ["## Who this might be", ""]
+        for note in profile.ambiguities:
+            out.append(f"> **{note}**")
+        if profile.ambiguities:
+            out.append("")
+        if profile.candidates:
+            out += ["Best corroborated first. NOVA has not decided which of "
+                    "these is your subject, and nothing below should be read "
+                    "as if it had.", "",
+                    "| Grade | Candidate | Relevance | Why | Sources |",
+                    "|---|---|---|---|---|"]
+            for c in profile.candidates:
+                out.append(f"| `{c.grade}` | {c.value} | {c.score:.3f} "
+                           f"| {c.why} | {', '.join(c.sources) or '-'} |")
+            out.append("")
+
+    bio = bio_md(profile.bio)
+    if bio:
+        out += ["## Who", "", bio]
+
+    socials = socials_md(profile.socials)
+    if socials:
+        out += ["## Accounts", "", socials]
+    return out
+
+
 def render_markdown(inv: Investigation) -> str:
     s = inv.to_dict()["summary"]
     conf = confidence_counts(inv)
@@ -336,6 +391,7 @@ def render_markdown(inv: Investigation) -> str:
         f"| Modules skipped | {s['skipped']} |",
         "",
     ]
+    out += _markdown_profile(inv)
     rows = status_rows(inv)
     if rows:
         out += [
