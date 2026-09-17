@@ -17,7 +17,10 @@ from __future__ import annotations
 import time
 from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle: entities needs TargetType
+    from .entities import Entity, EntityType
 
 
 class TargetType(str, Enum):
@@ -112,6 +115,31 @@ class Pivot:
 
 
 @dataclass
+class Link:
+    """An edge a module wants drawn on the investigation graph.
+
+    Deliberately a plain record rather than a ``graph.Edge``: modules produce
+    these, the engine turns them into weighted edges. Keeping the conversion on
+    the engine's side means a module never has to know about log-odds, hub
+    demotion or the evidence table - it says *what it saw*, and the scoring
+    layer decides what that is worth.
+    """
+
+    src: Entity
+    dst: Entity
+    label: str
+    #: Key into :data:`nova_osint.core.graph.EVIDENCE`.
+    kind: str
+    module: str = ""
+    url: str | None = None
+    detail: str = ""
+    #: sha256 of the stored response this was read from, when available.
+    evidence: str | None = None
+    #: Explicit strength, when the module can be more precise than the table.
+    llr: float | None = None
+
+
+@dataclass
 class ScanResult:
     module: str
     target: str
@@ -124,6 +152,13 @@ class ScanResult:
     status: ModuleStatus = ModuleStatus.SUCCESS
     #: Human sentence explaining a non-success status, shown in the report.
     status_reason: str = ""
+    #: The entity this module was pointed at. Set by the engine before ``run``,
+    #: so ``result.entity(...)`` knows what to hang a discovery off.
+    subject: Entity | None = None
+    #: Entities discovered, and the edges connecting them. Merged into the
+    #: investigation graph by the engine once the module returns.
+    nodes: list[Entity] = field(default_factory=list)
+    links: list[Link] = field(default_factory=list)
 
     def add(self, label: str, value: Any, source: str, **kw: Any) -> Finding:
         f = Finding(label=label, value=value, source=source, **kw)
@@ -133,6 +168,38 @@ class ScanResult:
     def pivot(self, target: str, target_type: TargetType, reason: str) -> None:
         if not any(p.target == target and p.target_type == target_type for p in self.pivots):
             self.pivots.append(Pivot(target, target_type, reason))
+
+    # -- graph ---------------------------------------------------------------
+
+    def entity(self, etype: EntityType | str, value: Any, *, relation: str,
+               evidence: str, url: str | None = None, detail: str = "",
+               llr: float | None = None, **attrs: Any) -> Entity | None:
+        """Record a discovery and connect it to what this module was scanning.
+
+        The common case by far, so it is one call: "I found this thing, here is
+        what it is, here is how it relates to the target, and here is the kind
+        of evidence that says so". Returns the entity, or ``None`` when the
+        value would not canonicalise - a miss on scraped text is normal, so the
+        caller can ignore the return without a try block.
+        """
+        from .entities import Entity, EntityType  # local: entities needs TargetType
+
+        etype = EntityType(etype) if isinstance(etype, str) else etype
+        found = Entity.make(etype, value, **attrs)
+        if found is None:
+            return None
+        self.nodes.append(found)
+        if self.subject is not None and found.eid != self.subject.eid:
+            self.link(self.subject, found, relation, evidence,
+                      url=url, detail=detail, llr=llr)
+        return found
+
+    def link(self, src: Entity, dst: Entity, relation: str, evidence: str, *,
+             url: str | None = None, detail: str = "",
+             llr: float | None = None) -> None:
+        """Connect two entities that are not necessarily the scan's subject."""
+        self.links.append(Link(src=src, dst=dst, label=relation, kind=evidence,
+                               module=self.module, url=url, detail=detail, llr=llr))
 
     def error(self, message: str) -> None:
         self.errors.append(message)
@@ -190,6 +257,16 @@ class Investigation:
     finished_at: float | None = None
     #: ``[(module name, why it did not run)]`` - reported, not silently dropped.
     skipped: list[tuple[str, str]] = field(default_factory=list)
+    #: The entity graph built during the run, when the engine was asked to
+    #: expand. ``Any`` rather than ``EntityGraph`` only to keep this module free
+    #: of the import cycle; it is always an ``EntityGraph`` or ``None``.
+    graph: Any = None
+    #: One row per HTTP request the scan made, for the case store's provenance
+    #: record. Empty unless the engine was told to keep a ledger.
+    requests: list[dict[str, Any]] = field(default_factory=list)
+    #: An ``engine.Expansion`` when the run walked the frontier, else ``None``.
+    #: Carries which budget limit stopped the walk and what was left unexplored.
+    expansion: Any = None
 
     def finish(self) -> Investigation:
         """Freeze the clock.
@@ -225,21 +302,30 @@ class Investigation:
         return [r for r in self.results if not r.status.is_complete]
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        summary = {
+            "modules_run": len(self.results),
+            "findings": len(self.findings),
+            "pivots": len(self.pivots),
+            "errors": sum(len(r.errors) for r in self.results),
+            "incomplete": len(self.incomplete),
+            "skipped": len(self.skipped),
+        }
+        if self.graph is not None:
+            summary["entities"] = len(self.graph)
+            summary["edges"] = len(self.graph.edges)
+        out: dict[str, Any] = {
             "target": self.target,
             "target_type": self.target_type.value,
             "started_at": self.started_at,
             "duration": round(self.duration, 2),
-            "summary": {
-                "modules_run": len(self.results),
-                "findings": len(self.findings),
-                "pivots": len(self.pivots),
-                "errors": sum(len(r.errors) for r in self.results),
-                "incomplete": len(self.incomplete),
-                "skipped": len(self.skipped),
-            },
+            "summary": summary,
             "module_status": {r.module: r.status.value for r in self.results},
             "skipped": [{"module": name, "reason": reason} for name, reason in self.skipped],
             "results": [r.to_dict() for r in self.results],
             "pivots": [p.to_dict() for p in self.pivots],
         }
+        if self.graph is not None:
+            out["graph"] = self.graph.to_dict()
+        if self.expansion is not None:
+            out["expansion"] = self.expansion.to_dict()
+        return out

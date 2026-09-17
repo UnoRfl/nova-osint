@@ -299,6 +299,20 @@ def _guess_provider(mx_hosts: list[str]) -> str:
     return "self-hosted or unrecognised"
 
 
+def _under(name: str, domain: str) -> bool:
+    """Is ``name`` the domain itself or something beneath it?
+
+    ``endswith(domain)`` is the obvious test and it is wrong: it accepts
+    ``m.testexample.com`` as a subdomain of ``example.com``, because the label
+    boundary is not part of a suffix match. That false positive is quiet - it
+    looks exactly like a real subdomain in a list of two hundred - and it is a
+    third party's host, so following it widens the scan onto someone unrelated.
+    """
+    name = str(name).strip().lower().rstrip(".").lstrip("*.")
+    domain = domain.strip().lower().rstrip(".")
+    return bool(name) and (name == domain or name.endswith("." + domain))
+
+
 @register
 class SubdomainModule(Module):
     name = "subdomains"
@@ -388,9 +402,8 @@ class SubdomainModule(Module):
                 continue
             for row in rows:
                 for name in str(row.get("name_value", "")).splitlines():
-                    name = name.strip().lower().rstrip(".")
-                    if name.endswith(domain):
-                        out.add(name)
+                    if _under(name, domain):
+                        out.add(name.strip().lower().rstrip("."))
         return out or None
 
     def _certspotter(self, domain: str) -> set[str] | None:
@@ -404,9 +417,8 @@ class SubdomainModule(Module):
         out = set()
         for row in rows:
             for name in row.get("dns_names", []):
-                name = str(name).strip().lower().rstrip(".")
-                if name.endswith(domain):
-                    out.add(name)
+                if _under(name, domain):
+                    out.add(str(name).strip().lower().rstrip("."))
         return out
 
     def _hackertarget(self, domain: str) -> set[str] | None:
@@ -416,7 +428,7 @@ class SubdomainModule(Module):
         out = set()
         for line in resp.text.splitlines():
             host = line.split(",")[0].strip().lower()
-            if host.endswith(domain):
+            if _under(host, domain):
                 out.add(host)
         return out
 

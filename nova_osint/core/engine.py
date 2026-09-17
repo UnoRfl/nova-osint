@@ -33,9 +33,12 @@ import threading
 import time
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from typing import Any
 
 from .config import Config
+from .entities import FROM_TARGET_TYPE, TO_TARGET_TYPE, Entity, EntityType
+from .graph import EntityGraph, Observation
 from .http import AccessStatus, Fetcher, Response
 from .logging_config import get_logger
 from .models import Investigation, ModuleStatus, ScanResult, TargetType
@@ -45,6 +48,12 @@ from .registry import Module, detect_type, select
 log = get_logger("engine")
 
 ProgressFn = Callable[[str, str], None]
+
+#: How many entities one expansion round looks at before rescoring. Small on
+#: purpose: the whole value of the frontier is that what round N finds changes
+#: what round N+1 thinks is worth doing, and a wide round throws that away by
+#: committing to an ordering computed before any of it ran.
+_ROUND_WIDTH = 4
 
 #: How a source's refusal maps onto the module's overall status.
 _REFUSAL_STATUS = {
@@ -64,10 +73,20 @@ class _ModuleHttp:
     implement that bookkeeping itself.
     """
 
-    def __init__(self, fetcher: Fetcher) -> None:
+    def __init__(self, fetcher: Fetcher, module: str = "",
+                 evidence: Any = None) -> None:
         self._fetcher = fetcher
         self._lock = threading.Lock()
+        self.module = module
+        #: Optional :class:`~nova_osint.core.store.EvidenceStore`. When present
+        #: every response body is filed by digest, so a finding can be traced
+        #: back to the exact bytes it was read from months later.
+        self.evidence = evidence
         self.seen: collections.Counter[AccessStatus] = collections.Counter()
+        #: One row per request, in order. This is the provenance record; it is
+        #: kept even for requests that found nothing, because "we looked and the
+        #: source was down" is the fact reports normally lose.
+        self.ledger: list[dict[str, Any]] = []
 
     # -- delegation ---------------------------------------------------------
 
@@ -92,8 +111,20 @@ class _ModuleHttp:
     # -- bookkeeping --------------------------------------------------------
 
     def _record(self, resp: Response) -> None:
+        digest = None
+        if self.evidence is not None and resp.body:
+            # Outside the lock: hashing and gzipping a megabyte of HTML while
+            # holding a lock every module thread wants is how a scan turns
+            # serial without anyone noticing.
+            digest = self.evidence.put(resp.body)
         with self._lock:
             self.seen[resp.access] += 1
+            self.ledger.append({
+                "at": time.time(), "module": self.module, "url": resp.url,
+                "status": resp.status, "access": resp.access.value,
+                "bytes": len(resp.body), "elapsed": round(resp.elapsed, 3),
+                "digest": digest, "cached": resp.from_cache,
+            })
 
     @property
     def refusals(self) -> list[tuple[AccessStatus, int]]:
@@ -107,14 +138,84 @@ class _ModuleHttp:
         return self.seen[AccessStatus.OK] + self.seen[AccessStatus.NOT_FOUND]
 
 
+def entity_for(target: str, ttype: TargetType) -> Entity | None:
+    """The graph node a user-typed target corresponds to."""
+    etype = FROM_TARGET_TYPE.get(ttype, EntityType.UNKNOWN)
+    if etype is EntityType.UNKNOWN:
+        return None
+    return Entity.make(etype, target)
+
+
+@dataclass
+class Budget:
+    """What an expansion is allowed to spend.
+
+    Four limits rather than one, because each bounds a different way for a walk
+    to run away. ``max_depth`` bounds how far from the target we drift;
+    ``min_score`` bounds how weakly-evidenced a lead can be and still get
+    looked at; ``max_entities`` bounds a graph that is broad rather than deep -
+    the normal shape for a domain with a thousand certificate names, and the one
+    a depth limit alone does nothing about; ``max_seconds`` bounds the thing the
+    user actually feels.
+
+    Whichever binds first wins, and :attr:`Expansion.stopped_by` says which did.
+    A truncated investigation that does not say it was truncated is the same
+    failure as a blocked source reported as an empty result.
+    """
+
+    max_depth: int = 2
+    min_score: float = 0.05
+    max_entities: int = 40
+    max_module_runs: int = 60
+    max_seconds: float = 300.0
+    #: Entity kinds worth spending a lookup on. ``None`` means every kind the
+    #: registry has a module for.
+    types: frozenset[EntityType] | None = None
+
+    @classmethod
+    def quick(cls) -> Budget:
+        return cls(max_depth=1, min_score=0.1, max_entities=8, max_module_runs=16,
+                   max_seconds=90.0)
+
+    @classmethod
+    def deep(cls) -> Budget:
+        return cls(max_depth=4, min_score=0.02, max_entities=200,
+                   max_module_runs=400, max_seconds=1800.0)
+
+
+@dataclass
+class Expansion:
+    """Bookkeeping for one frontier walk, reported alongside the findings."""
+
+    rounds: int = 0
+    module_runs: int = 0
+    expanded: list[str] = field(default_factory=list)
+    #: Which budget limit ended the walk, or "frontier exhausted" if none did.
+    stopped_by: str = "frontier exhausted"
+    #: Leads that scored well enough but were cut off. Named, not dropped: the
+    #: user needs to know the investigation was truncated and where.
+    unexplored: list[tuple[str, float]] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "rounds": self.rounds, "module_runs": self.module_runs,
+            "expanded": self.expanded, "stopped_by": self.stopped_by,
+            "unexplored": [{"entity": e, "score": round(s, 4)}
+                           for e, s in self.unexplored],
+        }
+
+
 class Engine:
     def __init__(
         self,
         config: Config,
         progress: ProgressFn | None = None,
         normalizer: DataNormalizer | None = None,
+        evidence: Any = None,
     ) -> None:
         self.config = config
+        #: Optional evidence store; when set, every response body is filed.
+        self.evidence = evidence
         self.progress = progress or (lambda module, state: None)
         self.normalizer = normalizer or DataNormalizer()
         kwargs: dict[str, object] = {
@@ -132,6 +233,8 @@ class Engine:
             kwargs["user_agent"] = config.user_agent
         self.http = Fetcher(**kwargs)  # type: ignore[arg-type]
         self._module_pool: ThreadPoolExecutor | None = None
+        self._ledger: list[dict[str, Any]] = []
+        self._ledger_lock = threading.Lock()
 
     # --------------------------------------------------------------------- run
 
@@ -185,8 +288,16 @@ class Engine:
         for name, reason in skipped:
             log.info("skipping %s: %s", name, reason)
 
-        results = self._run_all(modules, target, ttype, on_result)
+        seed = entity_for(target, ttype)
+        graph = EntityGraph(seed)
+        self._ledger.clear()
+        results = self._run_all(modules, target, ttype, on_result, seed)
         inv.results = sorted(results, key=lambda r: r.module)
+        for res in results:
+            self.merge(graph, res)
+        graph.rescore()
+        inv.graph = graph
+        inv.requests = list(self._ledger)
         inv.finish()
         log.info(
             "scan finished in %.1fs: %d finding(s), %d module(s) incomplete",
@@ -200,6 +311,7 @@ class Engine:
         target: str,
         ttype: TargetType,
         on_result: Callable[[ScanResult], None] | None,
+        subject: Entity | None = None,
     ) -> list[ScanResult]:
         """Run the modules concurrently on a pool of their own."""
         workers = max(1, min(len(modules), self.config.concurrency))
@@ -207,7 +319,7 @@ class Engine:
         self._module_pool = pool
         try:
             return [r for r in pool.map(
-                lambda m: self._run_one(m, target, ttype, on_result), modules
+                lambda m: self._run_one(m, target, ttype, on_result, subject), modules
             ) if r is not None]
         finally:
             pool.shutdown(wait=False)
@@ -219,10 +331,12 @@ class Engine:
         target: str,
         ttype: TargetType,
         on_result: Callable[[ScanResult], None] | None,
+        subject: Entity | None = None,
     ) -> ScanResult:
         """Run one module behind a hard failure boundary."""
         res = ScanResult(module=module.name, target=target, target_type=ttype)
-        recorder = _ModuleHttp(self.http)
+        res.subject = subject if subject is not None else entity_for(target, ttype)
+        recorder = _ModuleHttp(self.http, module.name, self.evidence)
         module.http = recorder  # type: ignore[assignment]
         self.progress(module.name, "start")
         log.debug("module %s started", module.name)
@@ -236,6 +350,8 @@ class Engine:
             res.error(f"{type(exc).__name__}: {exc}")
             log.error("module %s failed: %s: %s", module.name, type(exc).__name__, exc)
         res.duration = time.monotonic() - started
+        with self._ledger_lock:
+            self._ledger.extend(recorder.ledger)
 
         report = self.normalizer.normalize(res)
         if report.changed:
@@ -275,6 +391,171 @@ class Engine:
         if res.status is ModuleStatus.SUCCESS and not res.findings:
             res.status = ModuleStatus.EMPTY
             res.status_reason = "ran cleanly, nothing to report"
+
+    # ---------------------------------------------------------------- graph
+
+    @staticmethod
+    def merge(graph: EntityGraph, res: ScanResult) -> None:
+        """Fold one module's output into the investigation graph.
+
+        Two input shapes, because the module set is being migrated rather than
+        rewritten. A module that calls ``result.entity(...)`` says what kind of
+        evidence it has and gets scored on it; a module still calling the older
+        ``result.pivot(...)`` is not ignored - its pivot becomes a node with a
+        deliberately weaker ``pivot-derived`` edge, so old modules keep working
+        and new ones are rewarded for being specific.
+        """
+        for ent in res.nodes:
+            graph.add(ent, source=res.module)
+        for link in res.links:
+            graph.connect(link.src, link.dst, link.label, Observation(
+                kind=link.kind, module=link.module or res.module, url=link.url,
+                detail=link.detail, evidence=link.evidence, llr=link.llr,
+            ))
+        if res.subject is None:
+            return
+        for p in res.pivots:
+            etype = FROM_TARGET_TYPE.get(p.target_type, EntityType.UNKNOWN)
+            found = Entity.make(etype, p.target) if etype is not EntityType.UNKNOWN else None
+            if found is None or found.eid == res.subject.eid:
+                continue
+            graph.connect(res.subject, found, "pivot", Observation(
+                kind="pivot-derived", module=res.module, detail=p.reason))
+
+    def investigate(
+        self,
+        target: str,
+        only: Iterable[str] | None = None,
+        exclude: Iterable[str] | None = None,
+        target_type: TargetType | None = None,
+        budget: Budget | None = None,
+        on_result: Callable[[ScanResult], None] | None = None,
+    ) -> Investigation:
+        """Scan the target, then keep going along whatever it connects to.
+
+        The replacement for one flat pass plus a bolted-on pivot step. Each
+        round rescores the graph, takes the best-evidenced unexpanded entities
+        and runs the modules that accept them; discoveries feed back in and
+        change what looks worth doing next. That feedback is the point - a
+        second-hop email found through a registry contact outranks a first-hop
+        handle found by string similarity, and the budget gets spent
+        accordingly.
+
+        The walk stops on whichever budget limit binds first, and says which.
+        """
+        budget = budget or Budget()
+        started = time.monotonic()
+        ttype = target_type or detect_type(target)
+        seed = entity_for(target, ttype)
+        inv = Investigation(target=target, target_type=ttype)
+        graph = EntityGraph(seed)
+        inv.graph = graph
+        expansion = Expansion()
+        self._ledger.clear()
+
+        # (module name, entity id) pairs already run. Without this an entity
+        # reachable by two paths is scanned twice and the second run silently
+        # doubles the request count for no new information.
+        done: set[tuple[str, str]] = set()
+
+        queue: list[Entity] = [seed] if seed is not None else []
+        if seed is None:
+            log.warning("cannot expand from %s: unrecognised target type", target)
+
+        while queue:
+            expansion.rounds += 1
+            for ent in queue:
+                if graph.seed is None:
+                    graph.seed = ent.eid
+                stop = self._budget_stop(budget, expansion, started)
+                if stop:
+                    expansion.stopped_by = stop
+                    break
+                results = self._expand_one(ent, only, exclude, done, inv, on_result)
+                expansion.module_runs += len(results)
+                expansion.expanded.append(ent.eid)
+                node = graph.nodes.get(ent.eid)
+                if node is not None:
+                    node.expanded = True
+                for res in results:
+                    self.merge(graph, res)
+            if expansion.stopped_by != "frontier exhausted":
+                break
+
+            graph.rescore()
+            if len(graph) >= budget.max_entities:
+                expansion.stopped_by = f"entity cap ({budget.max_entities})"
+                break
+            nxt = graph.frontier(min_score=budget.min_score,
+                                 max_depth=budget.max_depth, types=budget.types)
+            queue = [n.entity for n in nxt[:_ROUND_WIDTH]]
+            for n in nxt[_ROUND_WIDTH:]:
+                expansion.unexplored.append((n.entity.eid, n.score))
+
+        graph.rescore()
+        # Leads that were good enough but never reached. Reported rather than
+        # dropped, so a truncated investigation reads as truncated.
+        for n in graph.frontier(min_score=budget.min_score, max_depth=budget.max_depth,
+                                types=budget.types):
+            if n.entity.eid not in expansion.expanded:
+                expansion.unexplored.append((n.entity.eid, n.score))
+        seen: set[str] = set()
+        expansion.unexplored = [
+            (eid, score) for eid, score in
+            sorted(expansion.unexplored, key=lambda p: -p[1])
+            if not (eid in seen or seen.add(eid))
+        ]
+
+        inv.results.sort(key=lambda r: (r.target, r.module))
+        inv.requests = list(self._ledger)
+        inv.expansion = expansion
+        inv.finish()
+        log.info(
+            "investigation finished in %.1fs: %d entities, %d edges, %d finding(s), "
+            "stopped by %s",
+            inv.duration, len(graph), len(graph.edges), len(inv.findings),
+            expansion.stopped_by,
+        )
+        return inv
+
+    @staticmethod
+    def _budget_stop(budget: Budget, expansion: Expansion, started: float) -> str:
+        if expansion.module_runs >= budget.max_module_runs:
+            return f"module-run cap ({budget.max_module_runs})"
+        elapsed = time.monotonic() - started
+        if elapsed >= budget.max_seconds:
+            return f"time limit ({budget.max_seconds:.0f}s)"
+        return ""
+
+    def _expand_one(
+        self,
+        ent: Entity,
+        only: Iterable[str] | None,
+        exclude: Iterable[str] | None,
+        done: set[tuple[str, str]],
+        inv: Investigation,
+        on_result: Callable[[ScanResult], None] | None,
+    ) -> list[ScanResult]:
+        """Run every applicable module against one entity."""
+        ttype = TO_TARGET_TYPE.get(ent.etype)
+        if ttype is None:
+            return []
+        _, modules, skipped = self.plan(ent.value, only, exclude, ttype)
+        modules = [m for m in modules if (m.name, ent.eid) not in done]
+        for m in modules:
+            done.add((m.name, ent.eid))
+        # Skips are recorded once, for the seed. Repeating "virustotal needs a
+        # key" for every entity in a forty-node graph buries the report.
+        if not inv.skipped:
+            inv.skipped = skipped
+        if not modules:
+            return []
+        log.info("expanding %s with %d module(s)", ent.eid, len(modules))
+        self.progress(f"expand:{ent.value}", "start")
+        results = self._run_all(modules, ent.value, ttype, on_result, ent)
+        self.progress(f"expand:{ent.value}", "done")
+        inv.results.extend(results)
+        return results
 
     def follow_pivots(
         self,

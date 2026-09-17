@@ -322,3 +322,20 @@ def test_securitytrails_sends_the_key_as_a_header_only() -> None:
     for url, headers in http.calls:
         assert "st-key" not in url
         assert headers.get("APIKEY") == "st-key"
+
+
+def test_subdomain_suffix_match_respects_the_label_boundary():
+    """endswith() accepts m.testexample.com as a subdomain of example.com.
+
+    Found by the entity graph: a name that is not under the target turned up as
+    a node, and following it would have widened the scan onto a third party.
+    """
+    from nova_osint.modules.domain import _under
+
+    assert _under("www.example.com", "example.com")
+    assert _under("a.b.example.com", "example.com")
+    assert _under("example.com", "example.com")
+    assert _under("*.example.com", "example.com")
+    assert not _under("m.testexample.com", "example.com")
+    assert not _under("notexample.com", "example.com")
+    assert not _under("", "example.com")

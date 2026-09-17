@@ -104,6 +104,11 @@ EVIDENCE: dict[str, float] = {
     # structural, not evidential --------------------------------------------
     "looks-like": 0.0,               # typosquat: a finding, not a link
     "mentioned": 0.1,
+    #: A legacy ``result.pivot()`` with no stated evidence. Modules only pivot
+    #: on something they actually found, so it is worth following - but it is
+    #: deliberately weaker than any typed evidence, so a module that upgrades to
+    #: ``result.entity(..., evidence=...)`` is rewarded with a better score.
+    "pivot-derived": 1.2,
 }
 
 #: Edges we never expand through, whatever they score. A typosquat neighbour is
