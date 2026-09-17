@@ -173,6 +173,44 @@ def import_modules() -> None:
     )
 
 
+#: Why a value cannot be the kind of thing it is about to be scanned as, per
+#: type. ``detect_type`` only ever *guesses*; ``--type`` (and the desktop app's
+#: type menu) overrides it, and nothing used to check the override made sense.
+#:
+#: Forcing ``--type username`` on a name with a space in it sent eight modules
+#: at URLs containing that space. Every one raised ``InvalidURL`` before a byte
+#: left the machine, and the report presented the wreckage as eight sources
+#: failing and 405 sites being unreachable - a local mistake dressed up as the
+#: internet's fault, which is the one thing this tool is built not to do.
+_SHAPE_CHECKS: dict[TargetType, tuple[re.Pattern[str], str]] = {
+    TargetType.USERNAME: (_USERNAME_RE,
+                          "not a handle: usernames are letters, digits, dot, "
+                          "dash and underscore, with no spaces"),
+    TargetType.DOMAIN: (_DOMAIN_RE, "not a domain name"),
+    TargetType.EMAIL: (_EMAIL_RE, "not an email address"),
+}
+
+
+def shape_problem(target: str, target_type: TargetType) -> str | None:
+    """Why *target* cannot be scanned as *target_type*, or ``None`` if it can.
+
+    Deliberately checks only the types whose values get interpolated into URLs
+    and DNS names. A person's name and a phone number are messy by nature and
+    the modules that take them cope; a handle is not, and pretending otherwise
+    costs a whole scan.
+    """
+    check = _SHAPE_CHECKS.get(target_type)
+    if check is None:
+        return None
+    pattern, reason = check
+    if pattern.match(target.strip()):
+        return None
+    detected = detect_type(target)
+    if detected not in (target_type, TargetType.UNKNOWN):
+        reason += f" - it looks like a {detected.value}"
+    return reason
+
+
 def select(
     target_type: TargetType,
     only: Iterable[str] | None = None,

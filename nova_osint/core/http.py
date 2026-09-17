@@ -72,8 +72,45 @@ _AUTH_HEADERS = frozenset({
     "x-apikey", "apikey",
 })
 
+#: Characters allowed through :func:`requote` unescaped. ``%`` is in both sets
+#: so an already-encoded URL survives a second pass rather than having its
+#: ``%20`` turned into ``%2520``; the cost is that a literal percent sign stays
+#: literal, which is the right trade for URLs built mostly from encoded parts.
+_PATH_SAFE = "/%:@&=+$,;~!'()*"
+_QUERY_SAFE = _PATH_SAFE + "?"
+
 T = TypeVar("T")
 R = TypeVar("R")
+
+
+def requote(url: str) -> str:
+    """Escape anything in *url* that cannot travel on the wire.
+
+    Modules build URLs by interpolating a target into an f-string, and a target
+    is whatever the user typed. A space in one used to reach ``http.client``
+    and raise ``InvalidURL`` before a single byte was sent - which the report
+    then printed as eight module failures, and which made the username sweep
+    announce that 405 sites were "unreachable, timed out or refused" when in
+    fact not one request had been attempted. Encoding here means no value a
+    user can type can stop a request being made, and no request that was never
+    made can be reported as a source refusing to answer.
+
+    Only the path, query and fragment are touched. The host is left alone: it
+    is not percent-encoded space but IDNA that a non-ASCII hostname needs, and
+    quietly escaping one would turn a valid internationalised domain into a
+    lookup that cannot succeed.
+    """
+    parts = urllib.parse.urlsplit(url)
+    if not parts.scheme:
+        # Not absolute, so there is no reliable path/host boundary to split on.
+        return url
+    return urllib.parse.urlunsplit((
+        parts.scheme,
+        parts.netloc,
+        urllib.parse.quote(parts.path, safe=_PATH_SAFE),
+        urllib.parse.quote(parts.query, safe=_QUERY_SAFE),
+        urllib.parse.quote(parts.fragment, safe=_QUERY_SAFE),
+    ))
 
 
 class AccessStatus(str, Enum):
@@ -335,6 +372,8 @@ class Fetcher:
         use_cache: bool = True,
         timeout: float | None = None,
     ) -> Response:
+        # Before the cache key, so one URL written two ways is one cache entry.
+        url = requote(url)
         cacheable = (
             use_cache
             and self.cache is not None

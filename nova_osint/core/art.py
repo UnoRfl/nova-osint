@@ -22,7 +22,10 @@ try:
 except Exception:  # pragma: no cover
     HAVE_RICH = False
 
-VERSION = "1.0.0"
+#: Re-exported from http so the banner cannot drift from the User-Agent and the
+#: package metadata. It had: the splash said v1.0.0 for the whole of 1.1.0,
+#: which is the version a user would quote in a bug report.
+from .http import VERSION  # noqa: E402
 
 # Cyan -> violet -> magenta: a nebula ramp that survives both light and dark
 # terminal themes because it never goes near the background colours.

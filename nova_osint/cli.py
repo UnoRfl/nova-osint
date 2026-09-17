@@ -455,10 +455,25 @@ def cmd_scan(args: argparse.Namespace) -> int:
             progress.clear()
             if store is not None:
                 store.close()
-            print(f"no modules accept a {ttype.value} target with these filters",
-                  file=sys.stderr)
-            for name, reason in skipped:
-                print(f"  skipped {name}: {reason}", file=sys.stderr)
+            reasons = {reason for _, reason in skipped}
+            if len(reasons) == 1 and len(skipped) > 1:
+                # One cause stopped everything - almost always a --type that
+                # the value cannot satisfy. Saying it once and naming the fix
+                # beats ten identical lines the reader has to diff by eye.
+                reason = reasons.pop()
+                print(f"cannot scan {args.target!r} as a {ttype.value}: {reason}",
+                      file=sys.stderr)
+                suggested = detect_type(args.target)
+                if suggested not in (ttype, TargetType.UNKNOWN):
+                    print(f"  try: nova scan {args.target!r} "
+                          f"--type {suggested.value}", file=sys.stderr)
+                else:
+                    print(f"  ({len(skipped)} module(s) skipped)", file=sys.stderr)
+            else:
+                print(f"no modules accept a {ttype.value} target with these filters",
+                      file=sys.stderr)
+                for name, reason in skipped:
+                    print(f"  skipped {name}: {reason}", file=sys.stderr)
             return EXIT_NOTHING_RAN
         if not args.quiet:
             print(f"target: {args.target}  type: {ttype.value}  "

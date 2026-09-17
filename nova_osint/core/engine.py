@@ -44,7 +44,7 @@ from .logging_config import get_logger
 from .models import Investigation, ModuleStatus, ScanResult, TargetType
 from .normalizer import DataNormalizer
 from .opsec import PassiveGuard, PassiveViolation
-from .registry import Module, detect_type, select
+from .registry import Module, detect_type, select, shape_problem
 
 log = get_logger("engine")
 
@@ -269,6 +269,14 @@ class Engine:
         classes = select(ttype, only, exclude)
         runnable: list[Module] = []
         skipped: list[tuple[str, str]] = []
+
+        # A forced --type that the value cannot satisfy stops the whole run,
+        # with the reason on every line. Letting the modules try produces a
+        # report full of tracebacks that reads as though the sources broke.
+        problem = shape_problem(target, ttype)
+        if problem is not None:
+            return ttype, [], [(cls.name, problem) for cls in classes]
+
         for cls in classes:
             if cls.name in self.config.disabled_modules:
                 skipped.append((cls.name, "disabled in config.json"))
