@@ -137,6 +137,9 @@ class Profile:
     exposure: list[tuple[str, str, str]] = field(default_factory=list)
     ambiguities: list[str] = field(default_factory=list)
     gaps: list[str] = field(default_factory=list)
+    #: One row per social platform, with the profile link. Populated from every
+    #: URL the investigation produced, whichever module found it.
+    socials: list[Any] = field(default_factory=list)
     #: ``(entity, score, why)`` when the subject itself is uncertain.
     candidates: list[Entry] = field(default_factory=list)
     entities: int = 0
@@ -158,6 +161,7 @@ class Profile:
                          for w, what, s in self.timeline],
             "exposure": [{"label": a, "value": b, "module": c}
                          for a, b, c in self.exposure],
+            "social_accounts": [a.to_dict() for a in self.socials],
             "ambiguities": self.ambiguities,
             "coverage_gaps": self.gaps,
         }
@@ -181,6 +185,14 @@ def build(inv: Investigation, *, per_section: int = 25,
         profile.truncated = inv.expansion.stopped_by
     profile.gaps = [f"{m}: {s}" + (f" - {r}" if r else "")
                     for m, s, r in status_rows(inv)]
+
+    from .socials import collect as collect_socials
+
+    handles = set()
+    if graph is not None:
+        handles = {n.entity.value for n in graph
+                   if n.entity.etype is EntityType.USERNAME}
+    profile.socials = collect_socials(inv, handles)
 
     # Ambiguity is load-bearing, so it is lifted out of the findings where it
     # would otherwise sit in the middle of a module's output and be missed.

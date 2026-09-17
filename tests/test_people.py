@@ -372,3 +372,29 @@ def test_relationship_evidence_is_ordered_sensibly():
             > EVIDENCE["org-member"] > EVIDENCE["co-maintainer"]
             > EVIDENCE["mutual-follow"] > EVIDENCE["social-follow"]
             > EVIDENCE["name-similarity"])
+
+
+def test_an_official_website_claim_becomes_its_hostname_not_a_path_segment():
+    """Caught live: http://x.com/index.html was recorded as the domain index.html.
+
+    A path segment with a dot in it canonicalises as a domain perfectly happily,
+    which is what makes this failure quiet.
+    """
+    http = FakeHttp({
+        "wbsearchentities": _json({"search": [
+            {"id": "Q1", "label": "Example Band", "description": "a band"}]}),
+        "ids=Q1": _json({"entities": {"Q1": {
+            "labels": {"en": {"value": "Example Band"}},
+            "claims": {"P856": [{"mainsnak": {"datavalue": {
+                "value": "http://www.jdlcrecords.com/jdlcrecords.html"}}}]},
+        }}}),
+    })
+    res = _run(WikidataModule, http, "Example Band", TargetType.PERSON)
+    values = {e.value for e in res.nodes}
+    # www.jdlcrecords.com is a HOST, not a DOMAIN - Entity.make promotes a name
+    # with a subdomain, which is correct and is what connects it to the apex.
+    assert "www.jdlcrecords.com" in values
+    assert "jdlcrecords.html" not in values
+    from nova_osint.core.entities import registrable
+
+    assert registrable("www.jdlcrecords.com") == "jdlcrecords.com"

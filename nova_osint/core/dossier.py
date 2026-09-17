@@ -21,6 +21,8 @@ import time
 
 from .models import Investigation
 from .profile import SECTIONS, Profile, build, confidence_line
+from .socials import render_html as social_html
+from .socials import render_text as social_text
 
 BAR = "=" * 78
 
@@ -49,6 +51,11 @@ def render_text(profile: Profile) -> str:
     if profile.truncated:
         out.append(f"  This profile is incomplete: the scan stopped on "
                    f"{profile.truncated}.")
+
+    # Directly after the assessment: it is the first thing anyone looks for in
+    # a profile, and burying it under six entity sections wastes the document.
+    out.append("\n## SOCIAL ACCOUNTS")
+    out.append(social_text(profile.socials))
 
     if profile.relationships:
         out.append("\n## RELATIONSHIPS")
@@ -105,7 +112,7 @@ def render_text(profile: Profile) -> str:
 # html
 # ---------------------------------------------------------------------------
 
-_CSS = """
+_CSS = r"""
 :root{--bg:#0d0d14;--fg:#e9e7f2;--dim:#8f8ca6;--line:#26243c;--accent:#7c5cff;
       --warn:#ffb3c8;--ok:#5ee6a8}
 *{box-sizing:border-box}
@@ -135,6 +142,10 @@ code,.g{font-family:ui-monospace,'Cascadia Code',monospace;font-size:12px}
 .gA{background:#0f3d2b;color:#5ee6a8}.gB{background:#123a45;color:#67d8f0}
 .gC{background:#3d3413;color:#f0d267}.gD{background:#2a2734;color:#a6a2bb}
 .gE{background:#3d1520;color:#ff8fa8}
+/* social-panel basis chips: Confirmed, Declared, Search-by-hand */
+.gS{background:#2a2734;color:#a6a2bb}
+a{color:#7dd3fc;text-decoration:none}
+a:hover{text-decoration:underline}
 .empty{color:var(--dim);font-style:italic;padding:8px}
 .dim{color:var(--dim)}
 """
@@ -171,6 +182,9 @@ def render_html(profile: Profile) -> str:
     if profile.truncated:
         p.append(f"<div class='warn'>This profile is <b>incomplete</b>: the scan "
                  f"stopped on {e(profile.truncated)}.</div>")
+
+    p.append("<h2>Social accounts<em>one row per platform</em></h2>")
+    p.append(social_html(profile.socials))
 
     if profile.relationships:
         indirect = [r for r in profile.relationships if r.indirect]

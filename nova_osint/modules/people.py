@@ -195,8 +195,17 @@ class WikidataModule(Module):
                            severity=Severity.HIGH)
                 if etype is None:
                     continue
-                node = Entity.make(etype, value.rstrip("/").split("/")[-1]
-                                   if etype is EntityType.DOMAIN else value)
+                if etype is EntityType.DOMAIN:
+                    # The official-website claim is a full URL. Taking the last
+                    # path segment turned http://x.com/index.html into the
+                    # "domain" index.html, which canonicalises happily because
+                    # it contains a dot and is entirely wrong.
+                    from ..core.http import hostname_of
+
+                    host = hostname_of(value)
+                    node = Entity.make(EntityType.DOMAIN, host) if host else None
+                else:
+                    node = Entity.make(etype, value)
                 if node is not None:
                     result.nodes.append(node)
                     result.link(subject, node, "declared-account", "wikidata-claim",
