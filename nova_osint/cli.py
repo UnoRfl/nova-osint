@@ -81,6 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("legal", help="print the usage and legal notice")
     sub.add_parser("art", help="show every banner NOVA can draw")
+    sub.add_parser("gui", help="open the desktop app")
     return p
 
 
@@ -280,6 +281,10 @@ def main(argv: list[str] | None = None) -> int:
         art.animate(sys.stdout, seconds=5.0)
         sys.stdout.write(art.gallery())
         return 0
+    if args.command == "gui":
+        from .gui import main as gui_main
+
+        return gui_main()
     parser.print_help()
     return 0
 

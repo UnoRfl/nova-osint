@@ -14,6 +14,11 @@ out/
 *.osint.json
 *.osint.html
 
+# pyinstaller output - the .exe is a release artifact, not source
+build/
+dist/
+*.manifest
+
 # python
 __pycache__/
 *.py[cod]

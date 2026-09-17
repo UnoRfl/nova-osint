@@ -66,7 +66,13 @@ class Engine:
         only: Iterable[str] | None = None,
         exclude: Iterable[str] | None = None,
         target_type: TargetType | None = None,
+        on_result: Callable[[ScanResult], None] | None = None,
     ) -> Investigation:
+        """Run every applicable module and collect the results.
+
+        ``on_result`` fires as each module finishes, off the calling thread, so
+        a UI can stream findings in instead of waiting for the slowest source.
+        """
         ttype, modules, _ = self.plan(target, only, exclude, target_type)
         inv = Investigation(target=target, target_type=ttype)
         if not modules:
@@ -82,6 +88,11 @@ class Engine:
                 res.error(f"{type(e).__name__}: {e}")
             res.duration = time.monotonic() - started
             self.progress(module.name, "done")
+            if on_result is not None:
+                try:
+                    on_result(res)
+                except Exception:
+                    pass  # a consumer's bug must not lose the scan
             return res
 
         # Modules run concurrently; each one internally fans out on the same

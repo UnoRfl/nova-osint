@@ -30,6 +30,10 @@ dev = ["rich>=13.0", "phonenumbers>=8.13", "pytest>=7.4", "ruff>=0.4"]
 [project.scripts]
 nova = "nova_osint.cli:main"
 nova-osint = "nova_osint.cli:main"
+# gui-scripts launches without a console window on Windows.
+
+[project.gui-scripts]
+nova-gui = "nova_osint.gui.app:main"
 
 [project.urls]
 Homepage = "https://github.com/UnoRfl/nova-osint"
