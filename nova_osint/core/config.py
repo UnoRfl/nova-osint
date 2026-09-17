@@ -57,9 +57,12 @@ KEY_ENV = {
 KEY_INFO: dict[str, dict[str, Any]] = {
     "github": {
         "label": "GitHub",
-        "unlocks": "Raises the API limit from 60/hr to 5,000/hr. A classic token "
-                   "with NO scopes ticked is enough - this tool reads public data only.",
-        "url": "https://github.com/settings/tokens",
+        "unlocks": "Raises the API limit from 60/hr to 5,000/hr. Use a token "
+                   "(classic) with NO scopes ticked - this tool reads public data "
+                   "only. Fine-grained tokens are scoped to a single owner and do "
+                   "not cover every endpoint used here.",
+        # Deliberately the classic-token page, not /settings/personal-access-tokens.
+        "url": "https://github.com/settings/tokens/new",
         "cost": "free",
         "modules": ("github", "gists", "email"),
         "required": False,
