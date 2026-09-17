@@ -35,12 +35,17 @@ TRAIL = 14  # samples of trail behind each body
 class OrbitCanvas(tk.Canvas):
     def __init__(self, master, width: int = 640, height: int = 380,
                  *, star_count: int = 130, show_rings: bool = True,
-                 speed: float = 1.0, **kw) -> None:
+                 speed: float = 1.0, show_label: bool | None = None,
+                 **kw) -> None:
         super().__init__(master, width=width, height=height, bg=theme.BG,
                          highlightthickness=0, bd=0, **kw)
         self.w, self.h = width, height
         self.speed = speed
         self.show_rings = show_rings
+        #: Draw the "NOVA" tag beside the lead planet. Defaults to "only if it
+        #: fits": at status-bar size the label is clipped to a couple of stray
+        #: letters, which reads as a rendering fault rather than as branding.
+        self.show_label = show_label if show_label is not None else width >= 120
         self._t = 0.0
         self._job: str | None = None
         self._running = False
@@ -162,7 +167,7 @@ class OrbitCanvas(tk.Canvas):
             self.create_oval(x - s * 0.4, y - s * 0.4, x + s * 0.4, y + s * 0.4,
                              fill=theme.blend(colour, "#ffffff", 0.55), outline="")
 
-            if name == "nova":
+            if name == "nova" and self.show_label:
                 self.create_text(x + s + 9, y - 1, text="NOVA", anchor="w",
                                  fill=theme.blend(colour, theme.BG, 0.35),
                                  font=("Consolas", 7))

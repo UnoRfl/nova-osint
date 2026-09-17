@@ -273,6 +273,62 @@ def test_a_broken_profile_does_not_take_the_scan_with_it(console, monkeypatch) -
     assert all(str(b["state"]) == "normal" for b in console.export_btns)
 
 
+# --------------------------------------------------------------- progress
+
+def test_the_spinner_is_hidden_until_something_runs(console) -> None:
+    assert not console.spinner.winfo_ismapped()
+    assert console.percent["text"] == ""
+
+
+def test_progress_reports_a_percentage_and_what_is_in_flight(console) -> None:
+    console._total = 4
+    console._show_progress(1, "dns, whois")
+    assert console.percent["text"].strip() == "25%"
+    assert "dns, whois" in console.status["text"]
+
+
+def test_progress_never_exceeds_a_hundred_percent(console) -> None:
+    console._total = 2
+    console._show_progress(5, "")
+    assert console.percent["text"].strip() == "100%"
+
+
+def test_a_zero_module_scan_does_not_divide_by_zero(console) -> None:
+    console._total = 0
+    console._show_progress(0, "")
+    assert console.percent["text"].strip().endswith("%")
+
+
+def test_with_nothing_in_flight_it_says_it_is_waiting_not_that_it_is_idle(console):
+    """A long scan with one slow module must not look finished or stuck."""
+    console._total = 4
+    console._show_progress(3, "")
+    assert "waiting" in console.status["text"]
+
+
+def test_stopping_the_spinner_clears_the_percentage(console) -> None:
+    console.spinner.grid()
+    console.spinner.start()
+    console._stop_spinner()
+    assert console.percent["text"] == ""
+    assert not console.spinner.winfo_ismapped()
+
+
+def test_finishing_a_scan_stops_the_spinner(console) -> None:
+    console.spinner.grid()
+    console.spinner.start()
+    console._finish(_social_investigation())
+    assert not console.spinner.winfo_ismapped()
+
+
+def test_the_mini_orbit_is_the_same_widget_the_boot_screen_uses(console) -> None:
+    """One animation in the app, so it cannot drift out of step with itself."""
+    from nova_osint.gui.orbit import OrbitCanvas
+
+    assert isinstance(console.spinner, OrbitCanvas)
+    assert console.spinner.speed > console.mini.speed, "the status one spins faster"
+
+
 # --------------------------------------------------------------------- settings
 
 
@@ -415,3 +471,46 @@ def test_console_opens_settings_and_reloads(console, themed, tmp_path, monkeypat
     window._save()
     themed.update_idletasks()
     assert "settings saved" in console.status["text"]
+
+
+def test_the_orbit_label_is_suppressed_when_there_is_no_room_for_it(themed) -> None:
+    """At status-bar size the clipped label reads as a rendering fault."""
+    from nova_osint.gui.orbit import OrbitCanvas
+
+    small = OrbitCanvas(themed, width=38, height=38)
+    big = OrbitCanvas(themed, width=640, height=380)
+    try:
+        assert not small.show_label
+        assert big.show_label
+    finally:
+        small.destroy()
+        big.destroy()
+
+
+def test_the_profile_tab_shows_the_biographical_block(console) -> None:
+    """And keeps two people who share a name apart, as the CLI does."""
+    inv = Investigation(target="Matthew Prince", target_type=TargetType.PERSON)
+    res = ScanResult(module="wikidata", target="Matthew Prince",
+                     target_type=TargetType.PERSON)
+    for label, value in (
+        ("Matthew Prince: date of birth", "1974-11-13"),
+        ("Matthew Prince: occupation", "entrepreneur"),
+        ("Matt Prince: date of birth", "1973-07-13"),
+        ("Matt Prince: occupation", "professional wrestler"),
+    ):
+        res.add(label, value, source="wikidata")
+    inv.results.append(res)
+    console._finish(inv.finish())
+
+    text = console.profilebox.get("1.0", "end")
+    assert "WHO" in text
+    assert "Date of birth:" in text and "1974-11-13" in text
+    assert "if this is Matthew Prince" in text
+    assert "if this is Matt Prince" in text
+    # The two must not be welded into one subject.
+    founder = text.index("if this is Matthew Prince")
+    wrestler = text.index("if this is Matt Prince")
+    lo, hi = sorted((founder, wrestler))
+    assert text.count("Date of birth:") == 2
+    assert "entrepreneur" in text and "professional wrestler" in text
+    assert lo < hi

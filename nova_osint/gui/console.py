@@ -26,7 +26,7 @@ from ..core.config import Config, runtime_config
 from ..core.engine import Engine
 from ..core.models import Investigation, ScanResult, Severity, TargetType
 from ..core.registry import detect_type, modules_for
-from . import theme
+from . import orbit, theme
 from .orbit import OrbitCanvas
 from .settings import SettingsWindow
 
@@ -60,6 +60,9 @@ class ConsoleScreen(ttk.Frame):
         self.investigation: Investigation | None = None
         #: tag name -> url, for the clickable links in the Profile tab.
         self._profile_links: dict[str, str] = {}
+        #: Progress bookkeeping for the status bar.
+        self._total = 0
+        self._running_modules: list[str] = []
         self.scanning = False
         self.started = 0.0
         self.module_vars: dict[str, tk.BooleanVar] = {}
@@ -376,18 +379,33 @@ class ConsoleScreen(ttk.Frame):
         theme.Rule(self, theme.LINE).grid(row=2, column=0, columnspan=2, sticky="ew")
         bar = tk.Frame(self, bg=theme.BG_PANEL, padx=16, pady=10)
         bar.grid(row=3, column=0, columnspan=2, sticky="ew")
-        bar.columnconfigure(1, weight=1)
+        bar.columnconfigure(1, weight=1)   # the text block takes the slack
 
-        self.status = tk.Label(bar, text="ready", bg=theme.BG_PANEL,
-                               fg=theme.INK_DIM, font=("Consolas", 9))
-        self.status.grid(row=0, column=0, sticky="w")
+        # The same orbit the boot screen draws, shrunk. Reusing OrbitCanvas
+        # rather than drawing a second spinner means there is one animation in
+        # the app and it cannot drift out of step with itself.
+        self.spinner = orbit.OrbitCanvas(
+            bar, width=38, height=38, star_count=14, show_rings=True, speed=2.2)
+        self.spinner.configure(bg=theme.BG_PANEL)
+        self.spinner.grid(row=0, column=0, sticky="w", padx=(0, 10))
+        self.spinner.grid_remove()   # only on screen while something is running
+
+        text = tk.Frame(bar, bg=theme.BG_PANEL)
+        text.grid(row=0, column=1, sticky="w")
+        self.percent = tk.Label(text, text="", bg=theme.BG_PANEL, fg=theme.ORCHID,
+                                font=("Consolas", 13, "bold"), width=5, anchor="w")
+        self.percent.pack(side="left")
+        self.status = tk.Label(text, text="ready", bg=theme.BG_PANEL,
+                               fg=theme.INK_DIM, font=("Consolas", 9),
+                               anchor="w", justify="left")
+        self.status.pack(side="left")
 
         self.bar = ttk.Progressbar(bar, style="Nova.Horizontal.TProgressbar",
                                    mode="determinate", length=280)
-        self.bar.grid(row=0, column=1, sticky="e", padx=16)
+        self.bar.grid(row=0, column=2, sticky="e", padx=16)
 
         btns = tk.Frame(bar, bg=theme.BG_PANEL)
-        btns.grid(row=0, column=2, sticky="e")
+        btns.grid(row=0, column=3, sticky="e")
         tk.Label(btns, text="export", bg=theme.BG_PANEL, fg=theme.INK_FAINT,
                  font=("Segoe UI", 8)).pack(side="left", padx=(0, 8))
         self.export_btns = []
@@ -504,6 +522,11 @@ class ConsoleScreen(ttk.Frame):
         self._profile_links.clear()
         self.profile_empty.place(relx=0.5, rely=0.45, anchor="center")
         self.bar.configure(maximum=len(chosen), value=0)
+        self._total = len(chosen)
+        self._running_modules = []
+        self.spinner.grid()
+        self.spinner.start()
+        self._show_progress(0, "starting")
 
         self._log_raw("  ", ("plain",))
         self._log_raw(f"{target}", ("bright",))
@@ -573,17 +596,23 @@ class ConsoleScreen(ttk.Frame):
                     _, module, state = item
                     if state == "start":
                         self._pill(module)
-                        self.status.configure(text=f"running  {module} …")
+                        if module not in self._running_modules:
+                            self._running_modules.append(module)
                         self._log_event(module, "run", "running")
                     else:
                         self._unpill(module)
                         self.bar["value"] = self.bar["value"] + 1
+                        if module in self._running_modules:
+                            self._running_modules.remove(module)
+                    self._show_progress(int(self.bar["value"]),
+                                        ", ".join(self._running_modules[:3]))
                 elif kind == "result":
                     self._add_result(item[1])
                 elif kind == "done":
                     self._finish(item[1])
                 elif kind == "fail":
                     self._log_event("scan", "fail", item[1])
+                    self._stop_spinner()
                     self._reset()
         except queue.Empty:
             pass
@@ -652,6 +681,7 @@ class ConsoleScreen(ttk.Frame):
         self._log_raw(" high interest  ", ("plain",))
         self._log_raw(f"{elapsed:.1f}s\n", ("time",))
         self._clear_pills()
+        self._stop_spinner()
         if not inv.findings:
             self.empty.configure(text="no findings\n\nnothing public turned up "
                                       "for this target")
@@ -697,6 +727,35 @@ class ConsoleScreen(ttk.Frame):
                 rows.append((f"   [{c.why}]\n", "dim"))
             rows.append(("    NOVA has not decided which of these is your "
                          "subject.\n", "warnrow"))
+
+        if profile.bio:
+            # Before the assessment, same as the CLI: a dossier on a person
+            # opens with who they are, not with a note on how well evidenced it
+            # all is. One block per candidate - merging them invents a person.
+            head("WHO")
+            for subject in profile.bio:
+                if subject.candidate:
+                    rows.append((f"    -- if this is {subject.name} --\n",
+                                 "notable"))
+                for attr in subject.attributes:
+                    label = (attr.label + ":").ljust(16)
+                    if not attr.established:
+                        rows.append((f"      {label} ", "plain"))
+                        rows.append(("not established\n", "dim"))
+                        continue
+                    first, *rest = attr.values
+                    rows.append((f"      {label} {first.text}", "plain"))
+                    rows.append((f"   [{first.grade} {first.source}]", "dim"))
+                    if attr.disputed:
+                        rows.append(("  (sources disagree)", "warnrow"))
+                    elif attr.multivalued:
+                        rows.append(("  (several)", "dim"))
+                    rows.append(("\n", "plain"))
+                    for value in rest:
+                        rows.append((f"      {' ' * 16} {value.text}", "plain"))
+                        rows.append((f"   [{value.grade} {value.source}]\n", "dim"))
+                    if attr.note:
+                        rows.append((f"      {' ' * 16} ({attr.note})\n", "dim"))
 
         head("ASSESSMENT")
         rows.append((f"    {confidence_line(profile)}\n", "plain"))
@@ -799,6 +858,32 @@ class ConsoleScreen(ttk.Frame):
             if url:
                 webbrowser.open(url)
                 return
+
+    def _show_progress(self, done: int, doing: str) -> None:
+        """Percentage plus what is in flight, so a long scan never looks stuck.
+
+        The count is of modules finished, which is honest but lumpy - a scan
+        with four instruments moves in 25% steps. It is still far better than a
+        bar with no number, because the thing a person wants to know during a
+        two-minute wait is whether anything is happening at all.
+        """
+        total = max(1, getattr(self, "_total", 1))
+        pct = min(100, int(done * 100 / total))
+        self.percent.configure(text=f"{pct:>3}%")
+        if doing:
+            self.status.configure(text=f"  {doing} …")
+        elif done >= total:
+            self.status.configure(text="  finishing up …")
+        else:
+            self.status.configure(text="  waiting on the slow ones …")
+
+    def _stop_spinner(self) -> None:
+        try:
+            self.spinner.stop()
+            self.spinner.grid_remove()
+        except tk.TclError:  # the window went away mid-scan
+            pass
+        self.percent.configure(text="")
 
     def _reset(self) -> None:
         self.scanning = False

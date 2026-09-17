@@ -19,8 +19,10 @@ from __future__ import annotations
 import html as html_mod
 import time
 
+from .biography import render_html as bio_html
+from .biography import render_text as bio_text
 from .models import Investigation
-from .profile import SECTIONS, Profile, build, confidence_line
+from .profile import Profile, build, confidence_line, sections_for
 from .socials import render_html as social_html
 from .socials import render_text as social_text
 
@@ -47,6 +49,12 @@ def render_text(profile: Profile) -> str:
             out.append("\n  NOVA has not decided which of these is your subject,"
                        "\n  and nothing below should be read as if it had.")
 
+    if profile.bio:
+        # First, and before the assessment: a dossier on a person opens with
+        # who they are, not with a note about how well evidenced it all is.
+        out.append("\n## WHO")
+        out.append(bio_text(profile.bio))
+
     out.append(f"\n## ASSESSMENT\n  {confidence_line(profile)}")
     if profile.truncated:
         out.append(f"  This profile is incomplete: the scan stopped on "
@@ -72,7 +80,7 @@ def render_text(profile: Profile) -> str:
                 out.append(f"    {r.grade}  {r.relation:<18} {r.b}"
                            f"   [{r.why}] - {r.reading}")
 
-    for heading, _kinds, note in SECTIONS:
+    for heading, _kinds, note in sections_for(profile.subject_type):
         entries = profile.sections.get(heading, [])
         out.append(f"\n## {heading.upper()}   ({len(entries)})")
         out.append(f"  {note}")
@@ -147,6 +155,11 @@ code,.g{font-family:ui-monospace,'Cascadia Code',monospace;font-size:12px}
 a{color:#7dd3fc;text-decoration:none}
 a:hover{text-decoration:underline}
 .empty{color:var(--dim);font-style:italic;padding:8px}
+table.bio th.k{width:170px;color:var(--dim);text-align:left;font-weight:600;
+  text-transform:none;letter-spacing:0;font-size:13px;vertical-align:top}
+table.bio td{font-size:14px}
+.warnpill{background:#3d1520;color:#ff8fa8;padding:1px 7px;border-radius:9px;
+  font-size:11px;margin-left:6px}
 .dim{color:var(--dim)}
 """
 
@@ -178,6 +191,10 @@ def render_html(profile: Profile) -> str:
                               e(c.why), e(", ".join(c.sources))]
                              for c in profile.candidates]))
 
+    if profile.bio:
+        p.append("<h2>Who<em>most important first</em></h2>")
+        p.append(bio_html(profile.bio))
+
     p.append(f"<h2>Assessment</h2><p>{e(confidence_line(profile))}</p>")
     if profile.truncated:
         p.append(f"<div class='warn'>This profile is <b>incomplete</b>: the scan "
@@ -201,7 +218,7 @@ def render_html(profile: Profile) -> str:
                             [[_grade(r.grade), e(r.relation), e(r.b), e(r.why),
                               e(r.reading)] for r in direct[:60]]))
 
-    for heading, _kinds, note in SECTIONS:
+    for heading, _kinds, note in sections_for(profile.subject_type):
         entries = profile.sections.get(heading, [])
         p.append(f"<h2>{e(heading)}<em>{e(note)}</em></h2>")
         if not entries:

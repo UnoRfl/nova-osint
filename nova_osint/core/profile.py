@@ -41,22 +41,48 @@ from .models import Investigation, Severity
 
 #: ``(heading, entity kinds, one line on how to read it)``. Ordered the way an
 #: analyst reads a dossier: who, how to reach them, who with, what they run.
-SECTIONS: list[tuple[str, tuple[EntityType, ...], str]] = [
-    ("Identity", (EntityType.PERSON,),
-     "names this subject is known by, and candidates sharing the name"),
-    ("Accounts", (EntityType.USERNAME,),
-     "handles, ranked by how well corroborated they are"),
-    ("Contact", (EntityType.EMAIL, EntityType.PHONE, EntityType.ADDRESS),
-     "addresses and numbers found in public records"),
-    ("Affiliations", (EntityType.ORG,),
-     "employers, memberships and corporate relationships"),
-    ("Infrastructure", (EntityType.DOMAIN, EntityType.HOST, EntityType.IP,
+_ALL_SECTIONS: dict[str, tuple[tuple[EntityType, ...], str]] = {
+    "Identity": ((EntityType.PERSON,),
+                 "names this subject is known by, and candidates sharing the name"),
+    "Accounts": ((EntityType.USERNAME,),
+                 "handles, ranked by how well corroborated they are"),
+    "Contact": ((EntityType.EMAIL, EntityType.PHONE, EntityType.ADDRESS),
+                "addresses and numbers found in public records"),
+    "Affiliations": ((EntityType.ORG,),
+                     "employers, memberships and corporate relationships"),
+    "Infrastructure": ((EntityType.DOMAIN, EntityType.HOST, EntityType.IP,
                         EntityType.CIDR, EntityType.ASN),
-     "domains, hosts and networks connected to the subject"),
-    ("Fingerprints", (EntityType.KEY, EntityType.SPKI, EntityType.CERT,
+                       "domains, hosts and networks connected to the subject"),
+    "Fingerprints": ((EntityType.KEY, EntityType.SPKI, EntityType.CERT,
                       EntityType.TRACKER, EntityType.FAVICON, EntityType.FILEHASH),
-     "shared identifiers that link this subject to other things"),
+                     "shared identifiers that link this subject to other things"),
+}
+
+#: Section order per kind of subject, most important first.
+#:
+#: A person and a domain want opposite orderings and one list cannot serve both.
+#: For a person, infrastructure is trivia and who they are is the answer; for a
+#: domain it is the reverse, and leading a domain report with "Identity: none
+#: found" is noise dressed up as rigour.
+_ORDER = {
+    "person": ("Identity", "Accounts", "Contact", "Affiliations",
+               "Fingerprints", "Infrastructure"),
+    "infrastructure": ("Infrastructure", "Contact", "Affiliations", "Accounts",
+                       "Fingerprints", "Identity"),
+}
+
+#: Default view, kept as a module constant because the renderers and the tests
+#: both import it. :func:`sections_for` is what a renderer should actually call.
+SECTIONS: list[tuple[str, tuple[EntityType, ...], str]] = [
+    (name, *_ALL_SECTIONS[name]) for name in _ORDER["person"]
 ]
+
+
+def sections_for(subject_type: str) -> list[tuple[str, tuple[EntityType, ...], str]]:
+    """The section order that suits this kind of subject."""
+    key = "person" if subject_type in ("person", "username", "email") \
+        else "infrastructure"
+    return [(name, *_ALL_SECTIONS[name]) for name in _ORDER[key]]
 
 #: Entity kinds that are people rather than things. Relationships between two of
 #: these are the part of a profile that is hardest to get elsewhere.
@@ -137,6 +163,11 @@ class Profile:
     exposure: list[tuple[str, str, str]] = field(default_factory=list)
     ambiguities: list[str] = field(default_factory=list)
     gaps: list[str] = field(default_factory=list)
+    #: Biographical attributes, most important first. Empty for anything that
+    #: is not a person.
+    bio: list[Any] = field(default_factory=list)
+    #: The section order this subject was rendered with.
+    order: list[str] = field(default_factory=list)
     #: One row per social platform, with the profile link. Populated from every
     #: URL the investigation produced, whichever module found it.
     socials: list[Any] = field(default_factory=list)
@@ -154,6 +185,7 @@ class Profile:
                         "relationships": len(self.relationships),
                         "duration": round(self.duration, 2),
                         "truncated": self.truncated},
+            "biography": [a.to_dict() for a in self.bio],
             "candidates": [c.to_dict() for c in self.candidates],
             "sections": {k: [e.to_dict() for e in v] for k, v in self.sections.items()},
             "relationships": [r.to_dict() for r in self.relationships],
@@ -186,6 +218,16 @@ def build(inv: Investigation, *, per_section: int = 25,
     profile.gaps = [f"{m}: {s}" + (f" - {r}" if r else "")
                     for m, s, r in status_rows(inv)]
 
+    # Before the graph early-return, deliberately. The biography is read from
+    # findings, not from entities, so a scan that linked nothing must still be
+    # able to say who the subject is - and a person scan that produced no graph
+    # was silently losing the entire block.
+    from .biography import extract as extract_bio
+
+    profile.bio = extract_bio(inv)
+    layout = sections_for(profile.subject_type)
+    profile.order = [name for name, _k, _n in layout]
+
     from .socials import collect as collect_socials
 
     handles = set()
@@ -207,7 +249,7 @@ def build(inv: Investigation, *, per_section: int = 25,
     profile.entities = len(graph)
     seed = graph.seed
 
-    for heading, kinds, _note in SECTIONS:
+    for heading, kinds, _note in layout:
         entries = []
         for node in graph:
             if node.entity.etype not in kinds or node.entity.eid == seed:

@@ -69,11 +69,22 @@ WD_CLAIMS: list[tuple[str, str, EntityType | None, str, str]] = [
     ("P355", "subsidiary", EntityType.ORG, "owns", "wikidata-claim"),
     ("P127", "owned by", EntityType.ORG, "owned-by", "wikidata-claim"),
     ("P1830", "owner of", EntityType.ORG, "owns", "wikidata-claim"),
+    # Reported, not turned into nodes: these describe the person rather than
+    # connecting them to anything, and a node for "male" or "English" would be
+    # a hub joining every unrelated subject in the case store.
     ("P106", "occupation", None, "", ""),
     ("P27", "citizenship", None, "", ""),
     ("P159", "headquarters", None, "", ""),
     ("P571", "founded", None, "", ""),
     ("P569", "date of birth", None, "", ""),
+    ("P570", "date of death", None, "", ""),
+    ("P19", "place of birth", None, "", ""),
+    ("P21", "gender", None, "", ""),
+    ("P551", "residence", None, "", ""),
+    ("P937", "work location", None, "", ""),
+    ("P1412", "languages", None, "", ""),
+    ("P39", "position held", None, "", ""),
+    ("P1477", "birth name", None, "", ""),
 ]
 
 #: External identifiers, which are the genuinely useful part: they are stable,
@@ -82,6 +93,11 @@ WD_IDENTIFIERS: list[tuple[str, str, EntityType | None]] = [
     ("P2002", "X/Twitter", EntityType.USERNAME),
     ("P2037", "GitHub", EntityType.USERNAME),
     ("P4033", "Mastodon", EntityType.USERNAME),
+    ("P2003", "Instagram", EntityType.USERNAME),
+    ("P2013", "Facebook", EntityType.USERNAME),
+    ("P7085", "TikTok", EntityType.USERNAME),
+    ("P2397", "YouTube channel", None),
+    ("P3185", "VK", EntityType.USERNAME),
     ("P6634", "LinkedIn", None),
     ("P856", "official website", EntityType.DOMAIN),
     ("P496", "ORCID", None),
