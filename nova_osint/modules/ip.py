@@ -104,13 +104,17 @@ class IpModule(Module):
             result.add("range", f"{start} - {data.get('endAddress', '?')}", source="rdap")
         if country := data.get("country"):
             result.add("registry country", country, source="rdap")
+        # Registries nest entities and repeat the same abuse address across
+        # several of them (APNIC lists it twice for 1.1.1.1), so collect first.
+        abuse: set[str] = set()
         for ent in data.get("entities", []) or []:
-            roles = ",".join(ent.get("roles", []))
-            if "abuse" in roles:
-                for item in ent.get("vcardArray", [None, []])[1] or []:
-                    if isinstance(item, list) and item[0] == "email":
-                        result.add("abuse contact", item[3], source="rdap",
-                                   severity=Severity.NOTABLE)
+            if "abuse" not in ",".join(ent.get("roles", [])):
+                continue
+            for item in ent.get("vcardArray", [None, []])[1] or []:
+                if isinstance(item, list) and len(item) >= 4 and item[0] == "email":
+                    abuse.add(str(item[3]))
+        for address in sorted(abuse):
+            result.add("abuse contact", address, source="rdap", severity=Severity.NOTABLE)
 
 
 def _reverse_name(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str:
