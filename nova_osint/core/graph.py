@@ -86,6 +86,13 @@ EVIDENCE: dict[str, float] = {
     "asn-announced": 2.0,
     "subdomain-of": 3.0,
     "spf-include": 2.0,
+    "dmarc-rua": 2.0,            # where a domain sends its DMARC reports
+    "email-domain": 3.0,         # the domain half of an address
+    "profile-email": 3.5,        # an address the account holder published
+    "profile-link": 1.5,         # a link someone put on their own profile
+    "key-uid": 5.0,              # identity baked into a published public key
+    "published-contact": 3.0,    # security.txt and friends
+    "passive-dns": 2.0,          # historic resolution, demoted by hub degree
     # behavioural / fingerprint ---------------------------------------------
     "favicon-hash": 2.5,
     "page-structure-hash": 2.0,

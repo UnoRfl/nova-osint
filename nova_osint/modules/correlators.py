@@ -350,9 +350,9 @@ class PackageModule(Module):
             # several maintainers, and attributing a co-maintainer's address to
             # this person is exactly the kind of quiet error that ends up in a
             # report as fact.
-            if publisher.get("username", "").casefold() == target.casefold():
-                if publisher.get("email"):
-                    emails[publisher["email"]] = pkg["name"]
+            if (publisher.get("username", "").casefold() == target.casefold()
+                    and publisher.get("email")):
+                emails[publisher["email"]] = pkg["name"]
         if packages:
             result.add("npm packages", sorted(packages)[:25], source="npm",
                        url=f"https://www.npmjs.com/~{target}")

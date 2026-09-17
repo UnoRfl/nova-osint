@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import time
 
+from ..core.entities import EntityType
 from ..core.http import hostname_of
 from ..core.models import Confidence, ModuleStatus, ScanResult, Severity, TargetType
 from ..core.registry import Module, register
@@ -208,7 +209,9 @@ class VirusTotalModule(Module):
                            source="virustotal")
             for alt in (cert.get("extensions") or {}).get("subject_alternative_name", [])[:25]:
                 if isinstance(alt, str) and "." in alt and not alt.startswith("*"):
-                    result.pivot(alt, TargetType.DOMAIN, "SAN on the TLS certificate")
+                    result.entity(EntityType.DOMAIN, alt, relation="cert-name",
+                                  evidence="cert-san",
+                                  detail="SAN on the TLS certificate")
 
     def _resolutions(self, kind: str, subject: str, is_ip: bool, result: ScanResult) -> None:
         """Passive DNS: what else VT has seen on this IP, or for this domain."""
@@ -244,8 +247,8 @@ class VirusTotalModule(Module):
                            "co-location is a lead, not a link"},
         )
         for value in seen[:15]:
-            result.pivot(
-                value,
-                TargetType.DOMAIN if is_ip else TargetType.IP,
-                "VirusTotal passive DNS",
+            result.entity(
+                EntityType.DOMAIN if is_ip else EntityType.IP, value,
+                relation="passive-dns", evidence="passive-dns",
+                detail="VirusTotal passive DNS - co-location is a lead, not a link",
             )

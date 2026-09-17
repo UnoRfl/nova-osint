@@ -432,10 +432,15 @@ class Engine:
             ))
         if res.subject is None:
             return
+        # A module that has migrated emits both an entity and, for
+        # compatibility, a Pivot for the same thing. Drawing the weak
+        # pivot-derived edge beside the typed one would add a second, worse
+        # observation to the same pair and drag its score down.
+        typed = {e.eid for e in res.nodes}
         for p in res.pivots:
             etype = FROM_TARGET_TYPE.get(p.target_type, EntityType.UNKNOWN)
             found = Entity.make(etype, p.target) if etype is not EntityType.UNKNOWN else None
-            if found is None or found.eid == res.subject.eid:
+            if found is None or found.eid == res.subject.eid or found.eid in typed:
                 continue
             graph.connect(res.subject, found, "pivot", Observation(
                 kind="pivot-derived", module=res.module, detail=p.reason))

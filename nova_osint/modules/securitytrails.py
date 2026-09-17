@@ -37,6 +37,7 @@ metered quota when one would have answered the question.
 
 from __future__ import annotations
 
+from ..core.entities import EntityType
 from ..core.http import hostname_of
 from ..core.models import Confidence, ModuleStatus, ScanResult, Severity, TargetType
 from ..core.registry import Module, register
@@ -141,7 +142,9 @@ class SecurityTrailsModule(Module):
                 org = item.get("ip_organization") or item.get("organization")
                 rendered.append(f"{value} ({org})" if org else str(value))
                 if key == "a" and item.get("ip"):
-                    result.pivot(str(item["ip"]), TargetType.IP, "SecurityTrails current DNS")
+                    result.entity(EntityType.IP, str(item["ip"]), relation="resolves-to",
+                                      evidence="dns-a",
+                                      detail="SecurityTrails current DNS")
 
             result.add(f"{key.upper()} (with owner)", rendered, source="securitytrails")
             if first_seen := block.get("first_seen"):
@@ -161,7 +164,9 @@ class SecurityTrailsModule(Module):
                    extra={"count": len(full),
                           "note": "SecurityTrails has seen these; they may no longer resolve"})
         for name in full[:20]:
-            result.pivot(name, TargetType.DOMAIN, "SecurityTrails subdomain history")
+            result.entity(EntityType.DOMAIN, name, relation="subdomain-of",
+                          evidence="subdomain-of",
+                          detail="SecurityTrails subdomain history")
 
     def _whois_history(self, host: str, result: ScanResult) -> None:
         """Registrant details from before the privacy shutter came down."""
@@ -206,7 +211,9 @@ class SecurityTrailsModule(Module):
 
         for address in emails[:8]:
             if "@" in address:
-                result.pivot(address, TargetType.EMAIL, "historic WHOIS registrant")
+                result.entity(EntityType.EMAIL, address, relation="historic-registrant",
+                              evidence="whois-email",
+                              detail="registrant address in WHOIS history")
 
         oldest = items[-1] if items else {}
         if isinstance(oldest, dict) and oldest.get("createdDate"):

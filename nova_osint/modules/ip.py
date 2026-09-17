@@ -10,6 +10,7 @@ from __future__ import annotations
 import ipaddress
 
 from ..core import dns as dnsmod
+from ..core.entities import EntityType
 from ..core.models import Confidence, ScanResult, Severity, TargetType
 from ..core.registry import Module, register
 
@@ -63,7 +64,8 @@ class IpModule(Module):
             names = sorted({p.rstrip(".") for p in ptr})
             result.add("reverse DNS", names, source="doh")
             for n in names[:5]:
-                result.pivot(n, TargetType.DOMAIN, "PTR record")
+                result.entity(EntityType.DOMAIN, n, relation="reverse-dns",
+                              evidence="reverse-dns", detail="PTR record")
 
         self._internetdb(target, result)
         self._rdap(target, result)
@@ -81,7 +83,9 @@ class IpModule(Module):
         if hostnames := data.get("hostnames"):
             result.add("hostnames", sorted(hostnames), source="shodan-internetdb")
             for h in sorted(hostnames)[:10]:
-                result.pivot(h, TargetType.DOMAIN, "hostname seen by Shodan")
+                result.entity(EntityType.DOMAIN, h, relation="hosted-name",
+                              evidence="reverse-dns",
+                              detail="hostname seen by Shodan InternetDB")
         if cpes := data.get("cpes"):
             result.add("software (CPE)", sorted(cpes), source="shodan-internetdb",
                        confidence=Confidence.LIKELY)

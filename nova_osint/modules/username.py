@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.config import DEFAULT_CACHE
+from ..core.entities import EntityType
 from ..core.models import Confidence, ModuleStatus, ScanResult, Severity, TargetType
 from ..core.registry import Module, register
 
@@ -180,7 +181,9 @@ class UsernameModule(Module):
         # A confirmed handle is the strongest pivot this tool produces.
         for hit in found[:40]:
             if hit["site"].lower() == "github":
-                result.pivot(handle, TargetType.USERNAME, "GitHub profile exists")
+                result.entity(EntityType.USERNAME, handle, relation="account-on-github",
+                              evidence="handle-verified",
+                              detail="profile confirmed, control handle did not match")
 
     # ------------------------------------------------------------------ checks
 

@@ -15,6 +15,7 @@ from __future__ import annotations
 import collections
 import re
 
+from ..core.entities import EntityType
 from ..core.models import Confidence, ScanResult, Severity, TargetType
 from ..core.registry import Module, register
 
@@ -61,14 +62,20 @@ class GithubModule(Module):
             if value := data.get(key):
                 result.add(label, value, source="github", severity=sev)
         if email := data.get("email"):
-            result.pivot(str(email), TargetType.EMAIL, "GitHub public email")
+            result.entity(EntityType.EMAIL, str(email), relation="contact",
+                          evidence="profile-email",
+                          detail="address published on the GitHub profile")
         if handle := data.get("twitter_username"):
-            result.pivot(str(handle), TargetType.USERNAME, "linked from GitHub profile")
+            result.entity(EntityType.USERNAME, str(handle), relation="linked-account",
+                          evidence="profile-link",
+                          detail="X/Twitter handle on the GitHub profile")
         if blog := data.get("blog"):
             from ..core.http import hostname_of
 
             if host := hostname_of(str(blog)):
-                result.pivot(host, TargetType.DOMAIN, "website on GitHub profile")
+                result.entity(EntityType.DOMAIN, host, relation="linked-site",
+                              evidence="profile-link",
+                              detail="website on the GitHub profile")
 
         result.add("account id", data.get("id"), source="github")
         result.add("created", str(data.get("created_at", ""))[:10], source="github")
@@ -102,7 +109,9 @@ class GithubModule(Module):
                        url=f"https://github.com/{user}.gpg", severity=Severity.NOTABLE)
             for uid in uids[:10]:
                 result.add("email in GPG key", uid, source="github", severity=Severity.HIGH)
-                result.pivot(uid, TargetType.EMAIL, "UID on GitHub GPG key")
+                result.entity(EntityType.EMAIL, uid, relation="key-identity",
+                              evidence="key-uid",
+                              detail="UID baked into the published GPG key")
 
     def _orgs(self, user: str, result: ScanResult) -> None:
         orgs = self.http.get_json(f"{API}/users/{user}/orgs?per_page=100", headers=self._headers())
@@ -148,6 +157,10 @@ class GithubModule(Module):
         emails: collections.Counter[str] = collections.Counter()
         offsets: collections.Counter[str] = collections.Counter()
         names: collections.Counter[str] = collections.Counter()
+        #: Addresses on commits in this user's repos that are *not* theirs -
+        #: either another account's, or one GitHub could not attribute at all.
+        #: Kept, but kept separate; see below.
+        others_seen: collections.Counter[str] = collections.Counter()
 
         for batch in batches:
             if not isinstance(batch, list):
@@ -156,9 +169,17 @@ class GithubModule(Module):
                 commit = (c or {}).get("commit") or {}
                 author = commit.get("author") or {}
                 login = ((c or {}).get("author") or {}).get("login")
-                if login and login.lower() != user.lower():
-                    continue  # someone else's commit in this repo
-                if email := author.get("email"):
+                email = author.get("email")
+                # Attribution must be positive. The old test was "skip it if the
+                # login is *someone else*", which let every commit GitHub could
+                # not map to an account through - and in a busy repo that is
+                # mostly other contributors. It claimed the owner of the repo
+                # was every kernel developer who had ever sent a patch.
+                if not login or login.lower() != user.lower():
+                    if email:
+                        others_seen[email] += 1
+                    continue
+                if email:
                     emails[email] += 1
                 if name := author.get("name"):
                     names[name] += 1
@@ -173,9 +194,26 @@ class GithubModule(Module):
         for e, n in real[:8]:
             result.add("commit author email", f"{e} ({n} commits)", source="github-commits",
                        severity=Severity.HIGH, confidence=Confidence.CONFIRMED)
-            result.pivot(e, TargetType.EMAIL, "email in public commit metadata")
+            result.entity(EntityType.EMAIL, e, relation="commits-as",
+                          evidence="commit-email",
+                          detail="author address in public commit metadata")
         if masked:
             result.add("privacy", "uses GitHub's noreply commit email", source="github-commits")
+
+        others = [e for e, _ in others_seen.most_common(15) if not NOREPLY.match(e)]
+        if others:
+            # Reported, because "who else commits here" is a real lead, and
+            # weighted at almost nothing, because it is not this person. The
+            # distinction is the whole point: a co-contributor's address
+            # asserted as the target's is a false identity in a report.
+            result.add("other contributor addresses", others, source="github-commits",
+                       confidence=Confidence.POSSIBLE,
+                       severity=Severity.INFO)
+            for other in others:
+                result.entity(EntityType.EMAIL, other, relation="contributes-with",
+                              evidence="mentioned",
+                              detail="commits in this user's repos, not attributed "
+                                     "to their account")
         for n, count in names.most_common(3):
             result.add("commit author name", f"{n} ({count})", source="github-commits",
                        severity=Severity.NOTABLE)

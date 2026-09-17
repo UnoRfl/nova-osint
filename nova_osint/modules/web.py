@@ -12,6 +12,7 @@ import re
 import struct
 import urllib.parse
 
+from ..core.entities import EntityType
 from ..core.http import hostname_of
 from ..core.models import Confidence, ScanResult, Severity, TargetType
 from ..core.registry import Module, register
@@ -259,7 +260,9 @@ class ExposedFilesModule(Module):
                     result.add("security contact", contact, source="security.txt",
                                severity=Severity.NOTABLE)
                     if contact.lower().startswith("mailto:"):
-                        result.pivot(contact[7:], TargetType.EMAIL, "security.txt contact")
+                        result.entity(EntityType.EMAIL, contact[7:], relation="security-contact",
+                                      evidence="published-contact",
+                                      detail="address in security.txt")
 
 
 @register
@@ -326,7 +329,9 @@ class WaybackModule(Module):
         if subs:
             result.add("hostnames seen in archive", sorted(subs)[:50], source="wayback")
             for s in sorted(subs)[:15]:
-                result.pivot(s, TargetType.DOMAIN, "seen in Internet Archive")
+                result.entity(EntityType.DOMAIN, s, relation="subdomain-of",
+                              evidence="subdomain-of",
+                              detail="seen in the Internet Archive")
 
 
 def _stamp(ts: str) -> str:

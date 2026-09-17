@@ -15,6 +15,7 @@ import re
 from datetime import datetime, timezone
 
 from ..core import dns as dnsmod
+from ..core.entities import EntityType
 from ..core.http import hostname_of
 from ..core.models import Confidence, ScanResult, Severity, TargetType
 from ..core.registry import Module, register
@@ -93,7 +94,9 @@ class WhoisModule(Module):
             if email := _vcard_field(ent, "email"):
                 result.add(f"contact email ({roles})", email, source="rdap",
                            severity=Severity.NOTABLE)
-                result.pivot(email, TargetType.EMAIL, f"RDAP {roles} contact")
+                result.entity(EntityType.EMAIL, email, relation="contact",
+                              evidence="rdap-contact",
+                              detail=f"RDAP {roles} contact")
 
         ns = sorted({n.get("ldhName", "").lower() for n in data.get("nameservers", []) if n.get("ldhName")})
         if ns:
@@ -155,7 +158,9 @@ class DnsModule(Module):
             result.add(rtype, sorted(set(answers)), source="doh")
             if rtype in ("A", "AAAA"):
                 for ip in answers:
-                    result.pivot(ip, TargetType.IP, f"{rtype} record for {domain}")
+                    result.entity(EntityType.IP, ip, relation="resolves-to",
+                                  evidence="dns-a",
+                                  detail=f"{rtype} record for {domain}")
 
         if not any(p and p[1] for p in pairs):
             result.error(f"{domain} does not resolve")
@@ -221,7 +226,9 @@ class MailPostureModule(Module):
                 result.add("DMARC weakness", "p=none: monitoring only, nothing is blocked",
                            source="analysis", severity=Severity.HIGH)
             for rua in re.findall(r"mailto:([^,;\s]+)", policy_rec):
-                result.pivot(rua, TargetType.EMAIL, "DMARC report address")
+                result.entity(EntityType.EMAIL, rua, relation="dmarc-reports-to",
+                              evidence="dmarc-rua",
+                              detail="address in the DMARC rua tag")
         else:
             result.add("DMARC", "missing", source="doh", severity=Severity.HIGH)
 
@@ -387,7 +394,8 @@ class SubdomainModule(Module):
                 extra={"count": len(dead)},
             )
         for h in live[:25]:
-            result.pivot(h, TargetType.DOMAIN, "live subdomain")
+            result.entity(EntityType.DOMAIN, h, relation="subdomain-of",
+                          evidence="subdomain-of", detail="resolves")
 
     # ------------------------------------------------------------------ sources
 

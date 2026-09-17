@@ -192,6 +192,14 @@ class ScanResult:
         if self.subject is not None and found.eid != self.subject.eid:
             self.link(self.subject, found, relation, evidence,
                       url=url, detail=detail, llr=llr)
+        # Also record it the old way when it is something a user could scan.
+        # The report's pivot section and --pivot both read Pivot objects, and a
+        # module migrating to entity() should not silently empty them.
+        from .entities import TO_TARGET_TYPE
+
+        ttype = TO_TARGET_TYPE.get(found.etype)
+        if ttype is not None:
+            self.pivot(found.display, ttype, detail or relation)
         return found
 
     def link(self, src: Entity, dst: Entity, relation: str, evidence: str, *,

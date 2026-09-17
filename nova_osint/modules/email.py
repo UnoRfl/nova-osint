@@ -14,6 +14,7 @@ import urllib.parse
 from pathlib import Path
 
 from ..core import dns as dnsmod
+from ..core.entities import EntityType
 from ..core.models import Confidence, ScanResult, Severity, TargetType
 from ..core.registry import Module, register
 
@@ -54,7 +55,9 @@ class EmailModule(Module):
 
         result.add("local part", local, source="parse")
         result.add("domain", domain, source="parse")
-        result.pivot(domain, TargetType.DOMAIN, "email domain")
+        result.entity(EntityType.DOMAIN, domain, relation="mail-domain",
+                      evidence="email-domain",
+                      detail="domain half of the address")
 
         # Plus-addressing and gmail dot-folding both hide the real inbox.
         canonical = local.split("+")[0]
@@ -77,7 +80,9 @@ class EmailModule(Module):
                            confidence=Confidence.POSSIBLE)
 
         for handle in _handle_candidates(canonical):
-            result.pivot(handle, TargetType.USERNAME, "derived from email local part")
+            result.entity(EntityType.USERNAME, handle, relation="possible-handle",
+                          evidence="handle-derived",
+                          detail="generated from the local part, not observed")
 
         # deliverability -----------------------------------------------------
         mx = dnsmod.resolve(self.http, domain, "MX")
@@ -136,13 +141,17 @@ class EmailModule(Module):
                 result.add(f"Gravatar {label}", value, source="gravatar",
                            severity=Severity.NOTABLE)
                 if field == "preferredUsername":
-                    result.pivot(str(value), TargetType.USERNAME, "Gravatar username")
+                    result.entity(EntityType.USERNAME, str(value), relation="same-as",
+                                  evidence="gravatar-hash",
+                                  detail="preferred username on the Gravatar profile")
         for acc in entry.get("accounts", []) or []:
             result.add(f"linked: {acc.get('shortname', acc.get('domain', '?'))}",
                        acc.get("url", ""), source="gravatar", url=acc.get("url"),
                        severity=Severity.HIGH)
             if user := acc.get("username"):
-                result.pivot(str(user), TargetType.USERNAME, "linked in Gravatar profile")
+                result.entity(EntityType.USERNAME, str(user), relation="linked-account",
+                              evidence="gravatar-hash",
+                              detail="account linked from the Gravatar profile")
 
     def _github(self, address: str, result: ScanResult) -> None:
         headers = {"Accept": "application/vnd.github+json"}
@@ -160,7 +169,9 @@ class EmailModule(Module):
         for item in (data.get("items") or [])[:5]:
             result.add("GitHub account", item.get("login", ""), source="github",
                        url=item.get("html_url"), severity=Severity.HIGH)
-            result.pivot(str(item.get("login")), TargetType.USERNAME, "GitHub account for this email")
+            result.entity(EntityType.USERNAME, str(item.get("login")), relation="same-as",
+                          evidence="commit-email",
+                          detail="GitHub account registered to this address")
 
 
 _DISPOSABLE_CACHE: set[str] | None = None

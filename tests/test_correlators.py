@@ -454,3 +454,42 @@ def test_modules_that_touch_the_target_declare_themselves_active():
     assert get_module("fingerprint").active
     for passive in ("keys", "keybase", "packages", "confusables"):
         assert not get_module(passive).active
+
+
+# ---------------------------------------------------------------------------
+# commit-email attribution
+# ---------------------------------------------------------------------------
+
+
+def test_only_attributed_commits_count_as_the_targets_own_address():
+    """A co-contributor's address asserted as the target's is a false identity.
+
+    GitHub leaves `author` null when it cannot map a commit to an account,
+    which in a busy repo is most of them. Attribution has to be positive.
+    """
+    from nova_osint.modules.github import GithubModule
+
+    commits = [
+        {"author": {"login": "alice"},
+         "commit": {"author": {"email": "alice@example.com", "name": "Alice",
+                               "date": "2026-01-01T10:00:00+01:00"}}},
+        {"author": None,  # GitHub could not attribute this one
+         "commit": {"author": {"email": "stranger@elsewhere.test", "name": "S",
+                               "date": "2026-01-01T10:00:00+01:00"}}},
+        {"author": {"login": "bob"},
+         "commit": {"author": {"email": "bob@example.com", "name": "Bob",
+                               "date": "2026-01-01T10:00:00+01:00"}}},
+    ]
+    http = FakeHttp({"/commits": _json(commits)})
+    res = ScanResult(module="github", target="alice", target_type=TargetType.USERNAME)
+    res.subject = Entity.make(EntityType.USERNAME, "alice")
+    GithubModule(http, Config(cache_dir=None))._commits(
+        "alice", [{"full_name": "alice/repo"}], res)
+
+    own = {link.dst.value for link in res.links if link.kind == "commit-email"}
+    assert own == {"alice@example.com"}
+    weak = {link.dst.value for link in res.links if link.kind == "mentioned"}
+    # Both of the others are still reported - who else commits here is a real
+    # lead - but as contributors, at almost no weight, never as her address.
+    assert weak == {"stranger@elsewhere.test", "bob@example.com"}
+    assert "bob@example.com" not in own
