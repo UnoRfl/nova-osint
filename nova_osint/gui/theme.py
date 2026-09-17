@@ -152,6 +152,32 @@ def install(root) -> Fonts:
                     darkcolor=LINE, padding=8)
     style.map("TEntry", bordercolor=[("focus", PURPLE)])
 
+    # A combobox needs every one of these. Left alone it draws a white field
+    # with near-white text on this theme, which reads as a broken widget - and
+    # ``readonly`` is its *resting* state, not an unusual one, so the readonly
+    # entry in the map below is the colour it wears almost all the time.
+    style.configure("TCombobox", fieldbackground=BG_INPUT, background=BG_RAISED,
+                    foreground=INK, arrowcolor=ORCHID, bordercolor=LINE,
+                    lightcolor=LINE, darkcolor=LINE, padding=5,
+                    selectbackground=BG_INPUT, selectforeground=INK)
+    style.map(
+        "TCombobox",
+        fieldbackground=[("readonly", BG_INPUT), ("disabled", BG_PANEL)],
+        foreground=[("readonly", INK), ("disabled", INK_FAINT)],
+        background=[("readonly", BG_RAISED), ("active", BG_HOVER)],
+        arrowcolor=[("active", MAGENTA)],
+        bordercolor=[("focus", PURPLE)],
+        selectbackground=[("readonly", BG_INPUT)],
+        selectforeground=[("readonly", INK)],
+    )
+    # The drop-down list is a classic Tk Listbox inside a toplevel, which ttk
+    # styling does not reach at all; the option database is the only way in.
+    root.option_add("*TCombobox*Listbox.background", BG_INPUT)
+    root.option_add("*TCombobox*Listbox.foreground", INK)
+    root.option_add("*TCombobox*Listbox.selectBackground", PLUM)
+    root.option_add("*TCombobox*Listbox.selectForeground", INK)
+    root.option_add("*TCombobox*Listbox.borderWidth", 0)
+
     style.configure("TButton", background=BG_RAISED, foreground=INK_DIM,
                     bordercolor=LINE, focuscolor=BG_RAISED, padding=(13, 7),
                     font=fonts.small)

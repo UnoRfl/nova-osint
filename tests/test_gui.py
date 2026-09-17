@@ -215,10 +215,12 @@ def _social_investigation():
     return inv.finish()
 
 
-def test_the_profile_tab_exists_beside_the_others(console) -> None:
+def test_the_result_tabs_are_in_the_order_a_reader_wants_them(console) -> None:
+    """Identity before Profile: "which of these is them" is the question,
+    and everything in the other tabs is working."""
     tabs = [console.notebook.tab(i, "text").strip()
             for i in range(console.notebook.index("end"))]
-    assert tabs == ["Findings", "Pivots", "Profile", "Live log"]
+    assert tabs == ["Findings", "Pivots", "Identity", "Profile", "Live log"]
 
 
 def test_finishing_a_scan_fills_the_profile_tab(console) -> None:
@@ -514,3 +516,111 @@ def test_the_profile_tab_shows_the_biographical_block(console) -> None:
     assert text.count("Date of birth:") == 2
     assert "entrepreneur" in text and "professional wrestler" in text
     assert lo < hi
+
+
+# ------------------------------------------------------------------ the brief
+
+
+def test_adding_a_fact_makes_a_chip_and_a_claim(console, themed) -> None:
+    console.brief_kind.set("city")
+    console.brief_value.set("Kuala Lumpur")
+    console._add_brief_fact()
+    themed.update_idletasks()
+
+    assert console.brief_facts == [("city", "Kuala Lumpur", True)]
+    # The entry clears, so the next fact can be typed straight away.
+    assert console.brief_value.get() == ""
+    chips = [c.cget("text") for c in console.brief_chips.winfo_children()]
+    assert any("Kuala Lumpur" in text for text in chips)
+
+
+def test_clicking_a_chip_removes_that_fact(console, themed) -> None:
+    for kind, value in (("city", "London"), ("employer", "Acme")):
+        console.brief_kind.set(kind)
+        console.brief_value.set(value)
+        console._add_brief_fact()
+    console._drop_brief_fact(0)
+    themed.update_idletasks()
+    assert [f[1] for f in console.brief_facts] == ["Acme"]
+
+
+def test_an_uncertain_fact_is_marked_as_one(console, themed) -> None:
+    console.brief_kind.set("city")
+    console.brief_value.set("KL")
+    console.brief_sure.set(False)
+    console._add_brief_fact()
+    themed.update_idletasks()
+    assert console.brief_facts[0][2] is False
+    chips = [c.cget("text") for c in console.brief_chips.winfo_children()]
+    assert any("?" in text for text in chips)
+
+
+def test_the_typed_target_is_folded_into_the_brief(console, themed) -> None:
+    """Leaving it out means the strongest evidence on screen confirms nothing."""
+    console.entry.delete(0, "end")
+    console.entry.insert(0, "ada@example.com")
+    console.brief_kind.set("city")
+    console.brief_value.set("Cambridge")
+    console._add_brief_fact()
+
+    brief = console._current_brief()
+    kinds = {c.kind.value for c in brief.claims}
+    assert "email" in kinds and "city" in kinds
+
+
+def test_the_identity_tab_shows_the_workings_and_the_contradictions(console, themed) -> None:
+    from nova_osint.core.brief import from_pairs
+    from nova_osint.core.entities import Entity, EntityType
+    from nova_osint.core.graph import EntityGraph
+    from nova_osint.core.identity import resolve
+
+    inv = Investigation(target="Ada Lovelace", target_type=TargetType.PERSON)
+    res = ScanResult(module="wikidata", target="Ada Lovelace",
+                     target_type=TargetType.PERSON)
+    graph = EntityGraph(Entity.make(EntityType.PERSON, "Ada Lovelace"))
+    for who, facts in (("Ada Lovelace (Q1)", [("date of birth", "1815-12-10")]),
+                       ("Ada Lovelace (Q2)", [("date of birth", "1974-03-02")])):
+        graph.add(Entity.make(EntityType.PERSON, who))
+        for label, value in facts:
+            res.add(f"{who}: {label}", value, source="wikidata")
+    inv.results = [res]
+    inv.graph = graph
+    inv.finish()
+    inv.resolution = resolve(inv, from_pairs(["name=Ada Lovelace", "born=1815"]))
+
+    console._render_identity(inv)
+    themed.update_idletasks()
+    text = console.identbox.get("1.0", "end")
+    assert "Q1" in text and "Q2" in text
+    # The reasoning is on screen, not just the ranking.
+    assert "born" in text
+    assert "1815" in text
+
+
+def test_the_identity_tab_stays_empty_without_a_brief(console, themed) -> None:
+    """No brief means no ranking to show, and none invented to fill the space."""
+    console._render_identity(_social_investigation())
+    themed.update_idletasks()
+    assert console.identbox.get("1.0", "end").strip() == ""
+
+
+def test_every_target_type_has_a_chip_colour(console, themed) -> None:
+    """Typing a name used to raise KeyError on every keystroke.
+
+    The trace fires per character, so the window died before the user had
+    finished typing - and a name is a documented target type.
+    """
+    for ttype in TargetType:
+        console.entry.delete(0, "end")
+        console.entry.insert(0, {
+            TargetType.PERSON: "Ada Lovelace",
+            TargetType.EMAIL: "ada@example.com",
+            TargetType.DOMAIN: "example.com",
+            TargetType.USERNAME: "adalovelace",
+            TargetType.IP: "8.8.8.8",
+            TargetType.PHONE: "+14155552671",
+            TargetType.URL: "https://example.com/x",
+            TargetType.UNKNOWN: "!!",
+        }[ttype])
+        themed.update_idletasks()
+        assert console.chip.cget("text")

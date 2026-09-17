@@ -40,10 +40,41 @@ PRESETS = [
     ("Phone", "+14155552671"),
 ]
 
+#: ``(what the menu says, the key the brief parser wants)``. Ordered by how
+#: often you actually know the thing, not alphabetically - the point is that
+#: the first two entries cover most of what a user has in hand.
+BRIEF_KINDS = [
+    ("full name", "name"),
+    ("city", "city"),
+    ("employer", "employer"),
+    ("email", "email"),
+    ("handle", "handle"),
+    ("phone", "phone"),
+    ("job title", "role"),
+    ("born", "born"),
+    ("country", "country"),
+    ("school", "school"),
+    ("website", "domain"),
+    ("profile URL", "url"),
+    ("language", "language"),
+    ("keyword", "keyword"),
+]
+
+#: What the typed target amounts to as a claim.
+_BRIEF_KIND_FOR_TYPE = {
+    TargetType.DOMAIN: "domain", TargetType.EMAIL: "email",
+    TargetType.USERNAME: "handle", TargetType.PERSON: "name",
+    TargetType.PHONE: "phone", TargetType.URL: "url", TargetType.IP: "ip",
+}
+
 TYPE_COLOUR = {
     TargetType.DOMAIN: theme.ORCHID,
     TargetType.EMAIL: theme.OK,
     TargetType.USERNAME: theme.MAGENTA,
+    # A name is its own type and it was missing here, so typing one into the
+    # target box raised KeyError on every keystroke - the trace fires per
+    # character - and the window died before the scan button was ever reached.
+    TargetType.PERSON: "#fbbf24",
     TargetType.IP: theme.CYAN,
     TargetType.PHONE: "#f9a8d4",
     TargetType.URL: theme.VIOLET,
@@ -152,7 +183,122 @@ class ConsoleScreen(ttk.Frame):
         self.activity = tk.Frame(sub, bg=theme.BG)
         self.activity.grid(row=0, column=1, sticky="e")
 
+        self._build_brief_row(inner)
         theme.Rule(head, theme.LINE).pack(fill="x")
+
+    def _build_brief_row(self, parent) -> None:
+        """"What else do you know?" - the row that makes the scan discriminate.
+
+        Directly under the target box on purpose. One seed can only produce
+        candidates; a second fact is what tells them apart, and a user who
+        never finds this control never gets the answer they came for. Putting
+        it in the sidebar with the other options would have hidden the most
+        valuable thing on the screen behind a scroll.
+        """
+        wrap = tk.Frame(parent, bg=theme.BG)
+        wrap.grid(row=2, column=1, sticky="ew", pady=(10, 0))
+        wrap.columnconfigure(1, weight=1)
+
+        entry_row = tk.Frame(wrap, bg=theme.BG)
+        entry_row.grid(row=0, column=0, columnspan=2, sticky="ew")
+
+        tk.Label(entry_row, text="also know", bg=theme.BG, fg=theme.INK_FAINT,
+                 font=("Segoe UI", 8)).pack(side="left", padx=(2, 9))
+
+        self.brief_kind = tk.StringVar(value=BRIEF_KINDS[0][0])
+        kinds = ttk.Combobox(entry_row, textvariable=self.brief_kind,
+                             values=[label for label, _ in BRIEF_KINDS],
+                             state="readonly", width=12,
+                             font=("Segoe UI", 8))
+        kinds.pack(side="left")
+
+        border = tk.Frame(entry_row, bg=theme.LINE, padx=1, pady=1)
+        border.pack(side="left", padx=(8, 8))
+        self.brief_value = tk.StringVar()
+        value = tk.Entry(border, textvariable=self.brief_value, width=26,
+                         bg=theme.BG_INPUT, fg=theme.INK, relief="flat",
+                         insertbackground=theme.MAGENTA, font=("Consolas", 9),
+                         highlightthickness=0, bd=0)
+        value.pack(ipady=4, ipadx=6)
+        value.bind("<Return>", lambda _e: self._add_brief_fact())
+
+        self.brief_sure = tk.BooleanVar(value=True)
+        ttk.Checkbutton(entry_row, text="sure", variable=self.brief_sure).pack(
+            side="left", padx=(0, 8))
+
+        add = tk.Label(entry_row, text="+ add", bg=theme.BG_RAISED,
+                       fg=theme.ORCHID, font=("Segoe UI", 8, "bold"),
+                       padx=12, pady=5, cursor="hand2")
+        add.pack(side="left")
+        add.bind("<Button-1>", lambda _e: self._add_brief_fact())
+        add.bind("<Enter>", lambda e: e.widget.configure(bg=theme.BG_HOVER))
+        add.bind("<Leave>", lambda e: e.widget.configure(bg=theme.BG_RAISED))
+
+        self.brief_hint = tk.Label(
+            entry_row,
+            text="a second fact is what tells forty results apart",
+            bg=theme.BG, fg=theme.INK_FAINT, font=("Segoe UI", 8))
+        self.brief_hint.pack(side="left", padx=(12, 0))
+
+        #: The claims themselves. Held as a list rather than rebuilt from the
+        #: chips so the uncertainty flag survives a redraw.
+        self.brief_facts: list[tuple[str, str, bool]] = []
+        self.brief_chips = tk.Frame(wrap, bg=theme.BG)
+        self.brief_chips.grid(row=1, column=0, columnspan=2, sticky="w",
+                              pady=(7, 0))
+
+    def _add_brief_fact(self) -> None:
+        value = self.brief_value.get().strip()
+        if not value:
+            return
+        kind = dict(BRIEF_KINDS)[self.brief_kind.get()]
+        self.brief_facts.append((kind, value, bool(self.brief_sure.get())))
+        self.brief_value.set("")
+        self._redraw_brief_chips()
+
+    def _drop_brief_fact(self, index: int) -> None:
+        if 0 <= index < len(self.brief_facts):
+            self.brief_facts.pop(index)
+            self._redraw_brief_chips()
+
+    def _redraw_brief_chips(self) -> None:
+        for child in self.brief_chips.winfo_children():
+            child.destroy()
+        for i, (kind, value, sure) in enumerate(self.brief_facts):
+            colour = theme.ORCHID if sure else theme.INK_DIM
+            mark = "" if sure else " ?"
+            chip = tk.Label(self.brief_chips, text=f"{kind}: {value}{mark}  ×",
+                            bg=theme.blend(colour, theme.BG, 0.86), fg=colour,
+                            font=("Segoe UI", 8), padx=9, pady=3,
+                            cursor="hand2")
+            chip.pack(side="left", padx=(0, 6))
+            chip.bind("<Button-1>", lambda _e, n=i: self._drop_brief_fact(n))
+        n = len(self.brief_facts)
+        self.brief_hint.configure(
+            text=("a second fact is what tells forty results apart" if n == 0
+                  else f"{n} fact(s) · click a chip to remove · "
+                       f"the scan will rank candidates against these"),
+            fg=theme.INK_FAINT if n == 0 else theme.ORCHID)
+
+    def _current_brief(self):
+        """The brief as the engine wants it, target included.
+
+        The target is folded in as a claim of its own because it is one: an
+        address typed above and a city added here are two things known about
+        one person, and leaving the address out means the strongest evidence
+        on the screen never gets to confirm anything.
+        """
+        from ..core import brief as briefing
+
+        brief = briefing.Brief(subject_kind="person")
+        for kind, value, sure in self.brief_facts:
+            brief.add(kind, value, certain=sure)
+        target = self._value()
+        if target:
+            kind = _BRIEF_KIND_FOR_TYPE.get(detect_type(target))
+            if kind is not None:
+                brief.add(kind, target)
+        return brief.expand() if brief else brief
 
     def _build_sidebar(self) -> None:
         side = tk.Frame(self, bg=theme.BG_PANEL, padx=16, pady=16)
@@ -312,6 +458,41 @@ class ConsoleScreen(ttk.Frame):
                  bg=theme.BG_PANEL, fg=theme.INK_FAINT,
                  font=("Segoe UI", 8)).grid(row=1, column=0, sticky="w", pady=6)
 
+        # --- identity
+        # The answer, when there is a brief to answer against. Ahead of Profile
+        # because "which of these is them" is the question, and everything in
+        # the other tabs is working.
+        ident = tk.Frame(nb, bg=theme.BG_PANEL)
+        nb.add(ident, text="  Identity  ")
+        ident.rowconfigure(0, weight=1)
+        ident.columnconfigure(0, weight=1)
+        self.identbox = tk.Text(
+            ident, bg=theme.BG_PANEL, fg=theme.INK, relief="flat",
+            highlightthickness=0, bd=0, font=("Consolas", 9), wrap="none",
+            padx=14, pady=12, spacing1=1, cursor="arrow")
+        self.identbox.grid(row=0, column=0, sticky="nsew")
+        isb = ttk.Scrollbar(ident, orient="vertical",
+                            command=self.identbox.yview)
+        isb.grid(row=0, column=1, sticky="ns")
+        self.identbox.configure(yscrollcommand=isb.set)
+        for name, colour in (("h1", theme.ORCHID), ("h2", theme.MAGENTA),
+                             ("dim", theme.INK_FAINT), ("plain", theme.INK_DIM),
+                             ("good", theme.OK), ("bad", theme.HIGH),
+                             ("warnrow", theme.NOTABLE),
+                             ("lead", theme.CYAN)):
+            self.identbox.tag_configure(name, foreground=colour)
+        self.identbox.tag_configure("h1", font=("Consolas", 13, "bold"))
+        self.identbox.tag_configure("h2", font=("Consolas", 10, "bold"))
+        self.identbox.tag_configure("lead", font=("Consolas", 10, "bold"))
+        self.identbox.configure(state="disabled")
+        self.ident_empty = tk.Label(
+            ident, bg=theme.BG_PANEL, fg=theme.INK_FAINT,
+            font=("Segoe UI", 10), justify="center",
+            text="add what you already know above, then scan\n\n"
+                 "one seed can only produce candidates —\n"
+                 "a second fact is what tells them apart")
+        self.ident_empty.place(relx=0.5, rely=0.45, anchor="center")
+
         # --- profile
         # Findings answers "what did each module say". This answers "who is
         # this" - the same investigation grouped by subject, with the social
@@ -448,7 +629,9 @@ class ConsoleScreen(ttk.Frame):
     def _on_target_change(self) -> None:
         value = self._value()
         ttype = detect_type(value) if value else TargetType.UNKNOWN
-        colour = TYPE_COLOUR[ttype]
+        # .get, not [], so a target type added later cannot take the window
+        # down on a keystroke the way PERSON did.
+        colour = TYPE_COLOUR.get(ttype, theme.INK_FAINT)
         self.chip.configure(
             text=ttype.value if ttype != TargetType.UNKNOWN else "—",
             fg=colour,
@@ -526,6 +709,10 @@ class ConsoleScreen(ttk.Frame):
         self.profilebox.configure(state="disabled")
         self._profile_links.clear()
         self.profile_empty.place(relx=0.5, rely=0.45, anchor="center")
+        self.identbox.configure(state="normal")
+        self.identbox.delete("1.0", "end")
+        self.identbox.configure(state="disabled")
+        self.ident_empty.place(relx=0.5, rely=0.45, anchor="center")
         self.bar.configure(maximum=len(chosen), value=0)
         self._total = len(chosen)
         self._running_modules = []
@@ -549,17 +736,31 @@ class ConsoleScreen(ttk.Frame):
         cfg.set_option("include_nsfw", self.nsfw.get())
         cfg.set_option("refresh_sites", False)
 
+        # More than the target itself means there is something to cross-check,
+        # and only the expanding walk can do it: it is the one path that puts
+        # every seed into a single graph where the evidence can converge.
+        brief = self._current_brief()
+        brief = brief if len(brief) > 1 else None
+        if brief is not None:
+            self._log_raw(f"  cross-checking against {len(brief)} known "
+                          f"fact(s)\n\n", ("plain",))
+
         threading.Thread(
-            target=self._run, args=(target, ttype, chosen, cfg), daemon=True
+            target=self._run, args=(target, ttype, chosen, cfg, brief), daemon=True
         ).start()
 
     def _run(self, target: str, ttype: TargetType, chosen: list[str],
-             cfg: Config) -> None:
+             cfg: Config, brief=None) -> None:
         try:
             with Engine(cfg, progress=lambda m, s: self.queue.put(("prog", m, s))) as e:
-                inv = e.scan(target, only=chosen, target_type=ttype,
-                             on_result=lambda r: self.queue.put(("result", r)))
-                if self.pivot.get():
+                if brief is not None:
+                    inv = e.investigate(
+                        target, only=chosen, target_type=ttype, brief=brief,
+                        on_result=lambda r: self.queue.put(("result", r)))
+                else:
+                    inv = e.scan(target, only=chosen, target_type=ttype,
+                                 on_result=lambda r: self.queue.put(("result", r)))
+                if self.pivot.get() and brief is None:
                     self.queue.put(("prog", "pivots", "start"))
                     for extra in e.follow_pivots(inv, limit=4):
                         inv.results.extend(extra.results)
@@ -692,9 +893,73 @@ class ConsoleScreen(ttk.Frame):
                                       "for this target")
             self.empty.place(relx=0.5, rely=0.45, anchor="center")
         self._render_profile(inv)
+        self._render_identity(inv)
         for b in self.export_btns:
             b.configure(state="normal")
         self._reset()
+
+    # ---------------------------------------------------------------- identity
+
+    def _render_identity(self, inv: Investigation) -> None:
+        """Draw the resolution into the Identity tab.
+
+        Rows are built here rather than piped through
+        :func:`nova_osint.core.identity.render_text` so each verdict can carry
+        its own colour: a contradiction has to be as visible as a confirmation,
+        and in a single monospace blob it is not.
+        """
+        res = getattr(inv, "resolution", None)
+        if res is None or not res.candidates:
+            return
+        from ..core.identity import Verdict
+
+        tag_for = {Verdict.CONFIRMS: "good", Verdict.CONSISTENT: "plain",
+                   Verdict.CONTRADICTS: "bad", Verdict.UNCHECKED: "warnrow",
+                   Verdict.UNKNOWN: "dim"}
+        mark_for = {Verdict.CONFIRMS: "++", Verdict.CONSISTENT: " +",
+                    Verdict.CONTRADICTS: "--", Verdict.UNCHECKED: " ?",
+                    Verdict.UNKNOWN: "  "}
+
+        rows: list[tuple[str, str]] = [
+            (f"  {res.subject}\n", "h1"),
+            (f"  {res.reading}\n", "lead"),
+        ]
+        for i, cand in enumerate(res.candidates):
+            rows.append((f"\n  {i + 1}. {cand.label}", "h2"))
+            rows.append((f"   ({cand.etype})\n", "dim"))
+            rows.append((f"       score {cand.score:+.1f}   "
+                         f"p={cand.probability:.2f}   "
+                         f"{cand.answered} of {len(cand.checks)} claims tested\n",
+                         "dim"))
+            if len(cand.members) > 1:
+                rows.append((f"       also: {', '.join(cand.members[1:6])}\n",
+                             "dim"))
+            # Only the leaders get their workings: past the third, the reader
+            # is scanning for names, not auditing arithmetic.
+            if i < 3:
+                for check in sorted(cand.checks, key=lambda c: -abs(c.llr)):
+                    if check.verdict is Verdict.UNKNOWN:
+                        continue
+                    found = f" -> {check.found}" if check.found else ""
+                    rows.append(
+                        (f"       {mark_for[check.verdict]} "
+                         f"{check.claim.kind.value:9} {check.claim.raw}{found}"
+                         f"   [{check.llr:+.1f}] {check.why}\n",
+                         tag_for[check.verdict]))
+        if res.next_check:
+            rows.append((f"\n  what would settle it:\n    {res.next_check}\n",
+                         "warnrow"))
+        if res.untestable:
+            rows.append(("\n  nothing in this scan could test:\n", "dim"))
+            for note in res.untestable:
+                rows.append((f"    {note}\n", "dim"))
+
+        self.ident_empty.place_forget()
+        self.identbox.configure(state="normal")
+        self.identbox.delete("1.0", "end")
+        for text, tag in rows:
+            self.identbox.insert("end", text, (tag,))
+        self.identbox.configure(state="disabled")
 
     # ----------------------------------------------------------------- profile
 
