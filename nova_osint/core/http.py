@@ -54,7 +54,7 @@ log = get_logger("http")
 #: scrapers are not - which is a decision that belongs to them, not to us.
 #: Override with ``--user-agent`` or ``settings.user_agent`` if a source you are
 #: authorised to query asks you to identify differently.
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 DEFAULT_UA = f"NOVA-OSINT/{VERSION} (+https://github.com/UnoRfl/nova-osint)"
 
 #: Threads in the shared pool carry this prefix, which is how :meth:`Fetcher.map`

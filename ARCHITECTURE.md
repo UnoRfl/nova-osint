@@ -504,3 +504,134 @@ it to the `RENDERERS` dict. It is picked up by `--format` and by
 Whatever you render, include `status_rows(inv)`. A report that lists findings
 without saying which instruments failed presents "we could not look" as
 "there was nothing there", which is the one error this tool must not make.
+
+---
+
+## The free-first acquisition layer
+
+Everything above describes *what* NOVA asks. This describes **how it decides
+where to ask, and what it records about having asked**. Read `docs/PLAN.md`
+for the phase map; this is the part that has landed.
+
+```
+   a need: "the subject's public repositories"
+                    │
+                    ▼
+        core/router.py  SourceRouter.acquire()
+                    │
+     local → cache → store → API → page → search → browser
+       │       │       │      │      │       │        │
+       └───────┴───────┴──────┴──────┴───────┴────────┘
+                    │  first rung that answers wins
+                    ▼
+        Outcome(value, Acquisition, [Attempt, ...])
+                    │
+   every attempt recorded, including the ones skipped and why
+```
+
+### `core/acquisition.py` — how a fact was obtained
+
+`Finding.source` says which module produced a value. `Finding.acquisition`
+says how it was fetched: method, provider, URL, query, HTTP status, timestamp
+and evidence hash. The two are different questions, and before this the second
+one had no answer.
+
+The method is stamped **at acquisition time by the thing that did the
+acquiring**, never inferred at render time. `Method` is ordered cheapest and
+most authoritative first, and that order is the router's ladder.
+
+A method is not a confidence. An authoritative registry read through a
+browser is still authoritative; a guess served by a JSON API is still a guess.
+
+### `core/providers.py` — what a source costs and whether it can answer
+
+`Availability` splits "needs a key" into the five answers it was hiding: free,
+free with limits, optional key, user-provided key, paid. Each key declares its
+own in `KEY_INFO["<name>"]["availability"]`, because the free-text `cost` line
+cannot be parsed — SecurityTrails' honest string is *"paid - no free tier
+advertised"*, and every substring rule that catches "paid" also catches the
+"free" three words later.
+
+`ProviderHealth` is per-run memory of which sources are answering. A source
+that rate limits us is benched for two minutes; one that refuses outright is
+benched for the run. Nothing is persisted: a source that was down this
+afternoon is not evidence about tomorrow.
+
+### `core/router.py` — the ladder
+
+`acquire()` has no failure path that raises. Exhausting every rung is an
+ordinary `Outcome` with `found=False`, a reason per rung, and
+`unavailable=True` when nothing could even be asked — which is the property
+the renderers key **CANNOT ACCESS** off, as distinct from **NOT FOUND**.
+
+A paid rung is skipped and named rather than attempted. "There is a source for
+this, it costs money, you have not enabled it" is a different answer from
+"nothing found", and occasionally the most useful line in a report.
+
+### `core/search.py` — engines as sources
+
+Wikipedia's API, Marginalia's public API and an operator-configured SearXNG
+instance are asked by default. Mojeek and DuckDuckGo Lite read pages built for
+people, so they are behind `--serp-pages`.
+
+Two normalisation rules carry the weight:
+
+- One document returned by three engines is **one row**, keeping the best
+  position any engine gave it.
+- One wire story on ten sites is **one independence group**. Syndication is
+  the dominant failure mode of search-derived intelligence, and without this
+  a rumour acquires the evidential weight of a fact.
+
+`core/robots.py` honours `robots.txt` for anything that reads a human page. It
+deliberately does **not** apply it to a documented API: Wikipedia disallows
+`/w/api.php` so search engines will not index JSON, while publishing that
+endpoint for programmatic use and writing an etiquette page for it. Treating
+that as a refusal refuses an invitation. `module_options.strict_robots`
+applies it everywhere for anyone who disagrees.
+
+### `core/queryplan.py` — what to ask
+
+Name variants are **rearrangements only**. "John A. Smith" is never generated
+from "John Smith": that is a different person's name until somebody says
+otherwise, and finding somebody at it is how these tools manufacture a match.
+
+Queries are ordered by how *identifying* their terms are, not by the order the
+templates were written. A bare common name is generated, ranked last, marked
+`ambiguous`, and its results can never become graph entities. Categories are
+re-weighted during the run by what they actually returned.
+
+### `core/browser.py` — the operator's own browser
+
+Optional at import time: with neither Playwright nor Selenium installed,
+`open_browser()` returns `NullBrowser`, every call reports the URL to open by
+hand, and the investigation continues.
+
+It will not solve a CAPTCHA, log in, pass a consent wall or defeat a paywall.
+`detect_challenge` names which kind of wall it is, the page comes back with
+`human_action` set, and the operator decides. `Page` is duck-typed like
+`Response` — `ok`, `status`, `access`, `describe()` — so the router, the
+health manager and the evidence store need no new vocabulary.
+
+Default profile is a temporary directory, deleted on close. A named profile is
+opt-in, and nothing reads cookies, passwords or history out of it.
+
+### `core/investigate.py` — the command
+
+Search runs **before** the expansion walk, deliberately: a bare name gives the
+frontier nothing to walk from, and search is what turns it into handles,
+domains and organisations the existing engine already knows how to pursue.
+After the walk, the strongest new entities generate follow-up queries.
+
+The live tree is the report's skeleton, not decoration. Every stage says what
+it asked, what answered, and what could not be reached.
+
+### Where to add things
+
+| You want to add | Do this |
+|---|---|
+| A source with an API | A `Module`, exactly as before. Nothing changed. |
+| A search engine | Subclass `SearchEngine`: `build_url` + `parse`, then add it to `_ENGINES` and `DEFAULT_ORDER`. Set `scraping = True` if it is a human page. |
+| A fallback chain for one need | Build `Step`s and hand them to `SourceRouter.acquire()`. |
+| A browser backend | Subclass `BrowserProvider`, implement `installed()`, `open()` and `navigate()`. |
+| A document format | A branch in `docparse.parse` and a `kind_of` signature. |
+| A new evidence kind | One line in `graph.EVIDENCE`, with a comment arguing for the number. |

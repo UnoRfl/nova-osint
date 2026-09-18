@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nova-osint"
-version = "1.1.0"
+version = "1.2.0"
 description = "NOVA - all-in-one OSINT collection: usernames, emails, domains, IPs and phone numbers from public sources."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -25,7 +25,12 @@ dependencies = []
 
 [project.optional-dependencies]
 full = ["rich>=13.0", "phonenumbers>=8.13"]
-dev = ["rich>=13.0", "phonenumbers>=8.13", "pytest>=7.4", "ruff>=0.4"]
+# Everything below is genuinely optional: the engine starts without any of
+# it, and each absence is reported as a named coverage gap, never a crash.
+browser = ["playwright>=1.40"]
+media = ["pillow>=10.0", "pytesseract>=0.3.10", "pypdf>=4.0"]
+dev = ["rich>=13.0", "phonenumbers>=8.13", "pytest>=7.4", "ruff>=0.4",
+       "pillow>=10.0"]
 
 [project.scripts]
 nova = "nova_osint.cli:main"

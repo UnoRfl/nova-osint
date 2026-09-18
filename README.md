@@ -14,27 +14,57 @@
 
 **One target in, every public source out.**
 
-19 modules · 480+ username platforms · desktop app + CLI · passive by default
+31 modules · free-first · browser-assisted · 480+ username platforms · desktop app + CLI
 
 </div>
 
 ---
 
-Give NOVA a domain, an email address, a username, an IP or a phone number. It
-works out what you handed it, runs every module that accepts that type in
-parallel, and returns one report with the findings ranked, the sources named,
-and the next targets worth scanning listed at the bottom.
+Give NOVA a name, a domain, an email address, a username, an IP or a phone
+number. It works out what you handed it, decides what is worth asking, asks
+it across free public sources, follows what the answers imply, and returns one
+report with the findings ranked, the sources named, **how each fact was
+obtained**, and — just as importantly — what it could not reach and why.
 
 ```bash
-nova scan example.com
-nova scan alice@example.com --format html --output report.html
-nova scan someuser --only username
-nova scan 8.8.8.8 --pivot
+nova investigate "Ada Lovelace"
+nova investigate "Ada Lovelace" -K employer=Acme -K city=Cambridge
+nova investigate ada@example.org --browser --image badge.jpg
+nova investigate example.com --depth 3 --search-engine all
 ```
+
+`nova scan` is still there and unchanged — one target, every module that
+accepts it, one flat report. `nova investigate` is the same engine with a plan
+in front of it.
 
 The engine is **standard library only** — no `requests`, no `dnspython`, no
 build step. `rich` and `phonenumbers` are optional and only make the output
 prettier and the phone parsing better.
+
+## Free first, always
+
+NOVA never assumes you have paid for anything. For every question it asks, it
+walks a ladder and stops at the first rung that answers:
+
+```
+local  →  cache  →  stored case  →  public API  →  public page  →  search  →  your browser
+```
+
+Whichever rung answered is recorded on the finding, so a search snippet can
+never be mistaken for a registry record. A source that needs a key you do not
+have, or costs money, is **named and skipped** — never quietly attempted and
+never rendered as "nothing found":
+
+```
+sources not consulted        these are gaps in coverage, not absences of evidence
+  securitytrails   paid            no key - paid source, not queried
+  virustotal       requires key    needs $VT_API_KEY
+  crtsh            rate limited    asked us to slow down
+  mojeek           not checked     result-page engine, not enabled (--serp-pages)
+```
+
+Paid sources are off unless you pass `--allow-paid`. Nothing here needs a
+subscription to work.
 
 ## Install
 
@@ -132,8 +162,20 @@ binary in place while still exiting 0.
 | `securitytrails` | domain | historical DNS and **pre-privacy WHOIS** | SecurityTrails |
 | `phone` | phone | validity, region, carrier, line type, timezone | – |
 | `dorks` | all | targeted search-engine and GitHub code-search queries | – |
+| `websearch` | name, username, email, domain | runs the planned queries against free engines; syndicated copies collapse to one source | – |
+| `documents` | URL | PDF/DOCX/XLSX metadata, the people its properties name, identifiers in its text | – |
+| `wikidata` | name, domain | curated claims, one subject per Q-id | – |
+| `bluesky` | name, username | accounts whose display name matches, ranked | – |
+| `social-graph` | username | mutual follows, which are relationships | – |
+| correlators | various | keys, keybase, trackers, fingerprints, packages, webfinger, confusables | – |
 
 Run `nova modules` to see which are live right now and which are waiting on a key.
+
+Images and documents are read locally and for free: `nova image badge.jpg`
+gives you format, dimensions, EXIF, GPS, camera, a sha256 and two perceptual
+hashes, plus OCR text when Tesseract is installed. It compares *pictures*, not
+people — two photographs of one person are two different pictures and will
+read as unrelated, which is the honest answer.
 
 ## Three things it does better than the usual stack
 
