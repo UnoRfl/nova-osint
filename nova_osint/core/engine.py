@@ -63,6 +63,10 @@ _REFUSAL_STATUS = {
     AccessStatus.ACCESS_DENIED: ModuleStatus.BLOCKED,
     AccessStatus.BLOCKED: ModuleStatus.BLOCKED,
     AccessStatus.UNAVAILABLE: ModuleStatus.UNAVAILABLE,
+    AccessStatus.HUMAN_ACTION_REQUIRED: ModuleStatus.HUMAN_ACTION,
+    # Payment is a kind of refusal we must never render as an empty result:
+    # "this source would have answered for money" is information.
+    AccessStatus.PAYMENT_REQUIRED: ModuleStatus.BLOCKED,
 }
 
 

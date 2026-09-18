@@ -65,6 +65,7 @@ KEY_INFO: dict[str, dict[str, Any]] = {
         "url": "https://github.com/settings/tokens/new",
         "cost": "free",
         "modules": ("github", "gists", "email"),
+        "availability": "optional key",
         "required": False,
     },
     "virustotal": {
@@ -74,6 +75,7 @@ KEY_INFO: dict[str, dict[str, Any]] = {
         "url": "https://www.virustotal.com/gui/my-apikey",
         "cost": "free tier (~4/min, 500/day, non-commercial)",
         "modules": ("virustotal",),
+        "availability": "user-provided key",
         "required": True,
     },
     "securitytrails": {
@@ -88,6 +90,7 @@ KEY_INFO: dict[str, dict[str, Any]] = {
         # remaining allowance before assuming this module can run.
         "cost": "paid - no free tier advertised (checked 2026-09-17)",
         "modules": ("securitytrails",),
+        "availability": "paid",
         "required": True,
     },
     "abuseipdb": {
@@ -96,6 +99,7 @@ KEY_INFO: dict[str, dict[str, Any]] = {
         "url": "https://www.abuseipdb.com/account/api",
         "cost": "free tier",
         "modules": ("abuseipdb",),
+        "availability": "user-provided key",
         "required": True,
     },
     "hibp": {
@@ -105,6 +109,7 @@ KEY_INFO: dict[str, dict[str, Any]] = {
         "url": "https://haveibeenpwned.com/API/Key",
         "cost": "paid subscription",
         "modules": ("pwned",),
+        "availability": "paid",
         "required": True,
     },
     "shodan": {
@@ -114,6 +119,7 @@ KEY_INFO: dict[str, dict[str, Any]] = {
         "url": "https://account.shodan.io/",
         "cost": "paid membership",
         "modules": (),
+        "availability": "disabled",
         "required": False,
     },
     "hunter": {
@@ -122,6 +128,7 @@ KEY_INFO: dict[str, dict[str, Any]] = {
         "url": "https://hunter.io/api-keys",
         "cost": "free tier",
         "modules": (),
+        "availability": "disabled",
         "required": False,
     },
     "numverify": {
@@ -131,6 +138,7 @@ KEY_INFO: dict[str, dict[str, Any]] = {
         "url": "https://numverify.com/dashboard",
         "cost": "free tier",
         "modules": (),
+        "availability": "disabled",
         "required": False,
     },
     "emailrep": {
@@ -139,6 +147,7 @@ KEY_INFO: dict[str, dict[str, Any]] = {
         "url": "https://emailrep.io/key",
         "cost": "free tier",
         "modules": (),
+        "availability": "disabled",
         "required": False,
     },
 }

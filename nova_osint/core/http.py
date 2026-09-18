@@ -128,12 +128,23 @@ class AccessStatus(str, Enum):
     BLOCKED = "blocked"
     UNAVAILABLE = "unavailable"
     CLIENT_ERROR = "client error"
+    #: The source will answer, but only to a human at a keyboard - a login
+    #: wall, a consent interstitial, a CAPTCHA. Deliberately its own word and
+    #: not ACCESS_DENIED: denied means we are not allowed, this means nobody
+    #: asked the right way yet, and the operator can resolve it themselves.
+    #: NOVA never solves one of these; it stops and says so.
+    HUMAN_ACTION_REQUIRED = "human action required"
+    #: The source exists and would answer for money. Its own word because
+    #: "you did not pay" and "we could not reach it" lead to different advice.
+    PAYMENT_REQUIRED = "payment required"
 
     @property
     def is_refusal(self) -> bool:
         """True when the source declined, as opposed to answering."""
         return self in (AccessStatus.RATE_LIMITED, AccessStatus.ACCESS_DENIED,
-                        AccessStatus.BLOCKED, AccessStatus.UNAVAILABLE)
+                        AccessStatus.BLOCKED, AccessStatus.UNAVAILABLE,
+                        AccessStatus.HUMAN_ACTION_REQUIRED,
+                        AccessStatus.PAYMENT_REQUIRED)
 
 
 def classify(status: int, error: str | None = None) -> AccessStatus:
@@ -146,7 +157,9 @@ def classify(status: int, error: str | None = None) -> AccessStatus:
         return AccessStatus.NOT_FOUND
     if status == 429:
         return AccessStatus.RATE_LIMITED
-    if status in (401, 402, 403, 407):
+    if status == 402:
+        return AccessStatus.PAYMENT_REQUIRED
+    if status in (401, 403, 407):
         return AccessStatus.ACCESS_DENIED
     if status == 451:
         return AccessStatus.BLOCKED

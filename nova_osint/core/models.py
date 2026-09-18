@@ -19,6 +19,10 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
+# Safe to import outright: acquisition.py imports nothing from this package,
+# precisely so that the provenance record can be attached at any layer.
+from .acquisition import Acquisition
+
 if TYPE_CHECKING:  # pragma: no cover - import cycle: entities needs TargetType
     from .entities import Entity, EntityType
 
@@ -79,6 +83,12 @@ class ModuleStatus(str, Enum):
     UNAVAILABLE = "unavailable"
     FAILED = "failed"
     SKIPPED = "skipped"
+    #: A source will answer, but only to a person: a login wall, a consent
+    #: interstitial, a CAPTCHA. Its own status rather than BLOCKED, because
+    #: BLOCKED means "we are not allowed and will not work around it" and this
+    #: means "you can finish this yourself in ten seconds". NOVA never solves
+    #: one; it names the URL and stops.
+    HUMAN_ACTION = "human action required"
 
     @property
     def is_complete(self) -> bool:
@@ -94,9 +104,24 @@ class Finding:
     severity: Severity = Severity.INFO
     url: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
+    #: How this value was obtained, as opposed to who said it. Optional so
+    #: every existing construction site keeps working; a renderer that finds
+    #: it missing says "method not recorded" rather than guessing one.
+    acquisition: Acquisition | None = None
+    #: When the *source* observed this, if it said. Distinct from the moment
+    #: we fetched it (``acquisition.obtained_at``): a profile fetched today can
+    #: be asserting something it last checked in 2019, and a timeline that
+    #: conflates the two dates is a timeline of our own scanning.
+    observed_at: float | None = None
+
+    @property
+    def method(self) -> str:
+        """One word for how this arrived, for renderers that show a column."""
+        return self.acquisition.method.value if self.acquisition else "unrecorded"
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
+        d["acquisition"] = self.acquisition.to_dict() if self.acquisition else None
         d["confidence"] = self.confidence.value
         d["severity"] = self.severity.value
         return d
@@ -287,6 +312,15 @@ class Investigation:
     #: Only ever set when ``brief`` is, because with one seed there is nothing
     #: to resolve against and a ranking would be invented rather than computed.
     resolution: Any = None
+    #: ``{provider: state}`` from a ``providers.ProviderHealth`` snapshot: what
+    #: each external source did during this run. Modules report per-module
+    #: status; this reports per-*source*, which is the level at which "it was
+    #: rate limited" and "it costs money" are true.
+    providers: dict[str, Any] = field(default_factory=dict)
+    #: ``router.Outcome`` dicts for needs that were routed rather than scanned.
+    #: The record of which rung of the free-first ladder answered, and what
+    #: happened on the ones above it.
+    routes: list[dict[str, Any]] = field(default_factory=list)
 
     def finish(self) -> Investigation:
         """Freeze the clock.
@@ -363,4 +397,8 @@ class Investigation:
             out["brief"] = self.brief.to_dict()
         if self.resolution is not None:
             out["resolution"] = self.resolution.to_dict()
+        if self.providers:
+            out["providers"] = self.providers
+        if self.routes:
+            out["routes"] = self.routes
         return out
