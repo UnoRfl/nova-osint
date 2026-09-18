@@ -34,6 +34,7 @@ from .core.engine import Engine
 from .core.logging_config import get_logger, setup_logging
 from .core.models import Severity, TargetType
 from .core.registry import all_modules, detect_type
+from .core.search import ENGINE_MODES
 
 log = get_logger("cli")
 
@@ -148,6 +149,7 @@ def build_parser() -> argparse.ArgumentParser:
                       help="cap the number of sites / subdomains probed (0 = no cap)")
     scan.add_argument("--min-severity", choices=[s.value for s in Severity], default="info",
                       help="hide findings below this interest level")
+    _search_flags(scan)
     scan.add_argument("-q", "--quiet", action="store_true", help="no banner, no progress")
     scan.add_argument("--no-art", action="store_true", help="keep the progress line, drop the ASCII art")
     _common(scan)
@@ -223,6 +225,34 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _search_flags(sp: argparse.ArgumentParser) -> None:
+    """Which free search engines this run may use, and how far it may go.
+
+    Split out because ``scan`` and ``investigate`` both take them and a
+    divergence between the two would mean the same flag doing different things
+    in the two commands people use interchangeably.
+    """
+    grp = sp.add_argument_group("search")
+    grp.add_argument("--search-engine", default=None,
+                     choices=list(ENGINE_MODES),
+                     help="auto: the best free engine that answers; api: only "
+                          "documented endpoints; page: only human result pages; "
+                          "browser: only through your own browser; all: every "
+                          "available engine, merged (default: auto)")
+    grp.add_argument("--serp-pages", action="store_true", default=None,
+                     help="allow reading search-engine result pages built for "
+                          "people (Mojeek, DuckDuckGo Lite). Off by default: "
+                          "fetchable and offered-to-programs are not the same "
+                          "thing, and NOVA does not pretend otherwise")
+    grp.add_argument("--search-queries", type=int, default=None,
+                     help="how many planned queries one scan may run (default 6)")
+    grp.add_argument("--searxng", default=None, metavar="URL",
+                     help="a SearXNG instance you are entitled to use, e.g. "
+                          "http://localhost:8888")
+    grp.add_argument("--no-search", action="store_true",
+                     help="run no search engines at all")
+
+
 def _common(sp: argparse.ArgumentParser) -> None:
     """Flags every subcommand shares. All default to ``None`` - see the module docstring."""
     g = sp.add_argument_group("network")
@@ -286,6 +316,19 @@ def load_config(args: argparse.Namespace) -> tuple[ConfigManager, Config]:
     cfg.set_option("verify_hits", getattr(args, "verify", False))
     cfg.set_option("refresh_sites", getattr(args, "refresh_sites", False))
     cfg.set_option("include_nsfw", getattr(args, "include_nsfw", False))
+
+    # Search options follow the same precedence rule as everything else: a
+    # flag left unset is None and does not overwrite config.json.
+    if getattr(args, "no_search", False):
+        cfg.set_option("search_engine", "none")
+    elif getattr(args, "search_engine", None):
+        cfg.set_option("search_engine", args.search_engine)
+    if getattr(args, "serp_pages", None):
+        cfg.set_option("allow_serp_pages", True)
+    if getattr(args, "search_queries", None) is not None:
+        cfg.set_option("search_queries", max(0, int(args.search_queries)))
+    if getattr(args, "searxng", None):
+        cfg.set_option("searxng_url", args.searxng)
 
     for problem in manager.problems:
         log.warning("config: %s", problem)

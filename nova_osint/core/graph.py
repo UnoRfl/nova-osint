@@ -112,6 +112,12 @@ EVIDENCE: dict[str, float] = {
     "handle-unverified": 0.4,        # 200 response, nothing more
     "handle-derived": 0.3,           # generated alias, e.g. dots stripped
     "name-similarity": 0.2,
+    #: A search engine's index contains a page whose URL names this handle.
+    #: Weaker than a 200 from the profile itself, because an index entry is a
+    #: third party's recollection of a page that may no longer exist, and the
+    #: query that surfaced it was written by us. It is a lead worth following,
+    #: never a link worth asserting.
+    "search-result": 0.25,
     "shared-hosting": 0.05,          # kept for the record, deliberately tiny
     # disconfirming ----------------------------------------------------------
     "control-handle-matched": -3.0,  # the site says yes to everyone

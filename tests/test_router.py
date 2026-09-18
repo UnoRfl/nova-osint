@@ -7,6 +7,8 @@ every step is a closure the test wrote itself.
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from nova_osint.core.acquisition import LADDER, Acquisition, Method, SourceType
@@ -402,7 +404,7 @@ def test_http_outcomes_map_onto_provider_health(status: int, expected: Health) -
 def test_provider_info_is_a_statement_not_a_mutable_state() -> None:
     info = ProviderInfo(name="x", label="X", availability=Availability.FREE,
                         method=Method.API)
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         info.name = "y"  # type: ignore[misc]
 
 

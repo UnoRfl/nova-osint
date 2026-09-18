@@ -190,6 +190,25 @@ class Response:
 
     @property
     def text(self) -> str:
+        """The body as text, honouring the charset the source declared.
+
+        UTF-8 is the right default and the wrong assumption: a source serving
+        ISO-8859-1 turns every accented character into a replacement mark, and
+        those marks then travel into findings, into the case store and into
+        reports as though the *name* contained them. Names are exactly the
+        data this tool cannot afford to mangle.
+        """
+        charset = ""
+        ctype = self.headers.get("content-type", "")
+        if "charset=" in ctype:
+            charset = ctype.split("charset=", 1)[1].split(";")[0].strip().strip('"')
+        for encoding in (charset, "utf-8"):
+            if not encoding:
+                continue
+            try:
+                return self.body.decode(encoding)
+            except (UnicodeDecodeError, LookupError):
+                continue
         return self.body.decode("utf-8", errors="replace")
 
     def json(self, default: Any = None) -> Any:

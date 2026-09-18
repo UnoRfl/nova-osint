@@ -293,7 +293,11 @@ class ConsoleScreen(ttk.Frame):
             # Typing narrows the list. With 195 countries an unfiltered
             # dropdown is a scroll, not a choice - and the box stays editable
             # so anything missing can still be typed.
-            def narrow(_event, box=box, all_values=list(choices)) -> None:
+            # noqa: B006 - the default is the late-binding capture idiom, not a
+            # shared accumulator: `all_values` is read and never mutated, and
+            # binding it here is what stops every dropdown in the loop closing
+            # over the last `choices`.
+            def narrow(_event, box=box, all_values=list(choices)) -> None:  # noqa: B006
                 typed = self.brief_value.get().strip().casefold()
                 box.configure(values=[v for v in all_values
                                       if typed in v.casefold()] or all_values)

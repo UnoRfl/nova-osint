@@ -170,6 +170,7 @@ def import_modules() -> None:
         username,
         virustotal,
         web,
+        websearch,
     )
 
 
