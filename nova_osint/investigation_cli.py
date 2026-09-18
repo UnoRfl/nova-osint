@@ -1,0 +1,288 @@
+"""``nova investigate`` and ``nova browser``: the two commands added by the
+free-first investigation layer.
+
+Kept out of ``cli.py`` deliberately. That file is already the longest thing in
+the project and its job is argument parsing and precedence; putting a second
+orchestration flow in it would bury the one rule that file exists to enforce -
+that a flag left unset is ``None`` and does not overwrite ``config.json``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+import time
+from typing import Any
+
+from .core import report as reporting
+from .core.browser import BrowserOptions, available_backends, open_browser
+from .core.investigate import investigate as run_investigation
+from .core.investigate import plan_for
+from .core.models import Severity, TargetType
+from .core.registry import detect_type
+
+EXIT_OK = 0
+EXIT_NO_FINDINGS = 1
+EXIT_USAGE = 2
+
+
+def add_parsers(sub: Any, common: Any, search_flags: Any) -> None:
+    """Register both commands on the main parser."""
+    inv = sub.add_parser(
+        "investigate",
+        help="work out what to ask, ask it, follow what it finds",
+        description="Give it a name, a handle, an address, a domain or an IP. "
+                    "It plans the queries, runs the free sources, follows what "
+                    "they imply, and says what it could not reach.",
+    )
+    inv.add_argument("target", nargs="?",
+                     help="a name, username, email, domain, IP, phone or URL")
+    inv.add_argument("-K", "--know", action="append", default=[], metavar="FACT=VALUE",
+                     help="something you already know about the subject; "
+                          "repeatable, and the single most useful thing you can "
+                          "give it")
+    inv.add_argument("--brief", metavar="FILE",
+                     help="read the same facts from a JSON or YAML file")
+    inv.add_argument("--subject", choices=("person", "org"), default="person")
+    inv.add_argument("-t", "--type", choices=[t.value for t in TargetType
+                                              if t is not TargetType.UNKNOWN])
+    inv.add_argument("-o", "--output")
+    inv.add_argument("-f", "--format", default="console",
+                     choices=sorted(reporting.RENDERERS))
+    inv.add_argument("--depth", type=int, default=None,
+                     help="1 direct, 2 first-order pivots, 3 second-order, "
+                          "4 deep correlation (default 2)")
+    inv.add_argument("--budget", choices=("quick", "normal", "deep"), default="normal")
+    inv.add_argument("--max-entities", type=int, default=None)
+    inv.add_argument("--time-limit", type=float, default=None, metavar="SECONDS")
+    inv.add_argument("--max-queries", type=int, default=8,
+                     help="how many planned queries to run (default 8)")
+    inv.add_argument("--browser", action="store_true",
+                     help="use your own browser for what plain HTTP cannot "
+                          "reach. Nothing is bypassed: a login wall or a "
+                          "CAPTCHA is reported for you to finish yourself")
+    inv.add_argument("--browser-show", action="store_true",
+                     help="run the browser visibly instead of headless")
+    inv.add_argument("--browser-profile", default="",
+                     help="a browser profile directory to reuse (default: a "
+                          "throwaway profile, deleted afterwards)")
+    inv.add_argument("--image", action="append", default=[], metavar="FILE",
+                     help="a photograph to read for clues (EXIF, text, logos)")
+    inv.add_argument("--dry-run", action="store_true",
+                     help="print the plan and stop without asking anything")
+    inv.add_argument("--only")
+    inv.add_argument("--exclude")
+    inv.add_argument("--passive", action="store_true")
+    inv.add_argument("--allow-paid", action="store_true",
+                     help="permit sources that cost money (off by default)")
+    inv.add_argument("--redact", action="store_true")
+    inv.add_argument("--redact-salt", default="")
+    inv.add_argument("--no-save", action="store_true")
+    inv.add_argument("--label", default="")
+    inv.add_argument("--min-severity", choices=[s.value for s in Severity],
+                     default="info")
+    inv.add_argument("-q", "--quiet", action="store_true")
+    inv.add_argument("--no-art", action="store_true")
+    inv.add_argument("--max-sites", type=int, default=None)
+    inv.add_argument("--no-verify", action="store_false", dest="verify")
+    inv.set_defaults(verify=True, refresh_sites=False, include_nsfw=False,
+                     expand=True, pivot=False, pivot_limit=0)
+    search_flags(inv)
+    common(inv)
+
+    br = sub.add_parser("browser",
+                        help="check or set up the browser NOVA can drive")
+    br.add_argument("action", nargs="?", default="status",
+                    choices=("status", "setup", "test"))
+    br.add_argument("--url", default="https://example.com",
+                    help="page to load for `browser test`")
+    br.add_argument("--show", action="store_true", help="run visibly")
+    br.add_argument("--profile", default="")
+    common(br)
+
+
+# --------------------------------------------------------------------- browser
+
+
+def cmd_browser(args: argparse.Namespace, cfg: Any) -> int:
+    backends = available_backends()
+    if args.action == "status":
+        print("browser backends available: "
+              + (", ".join(backends) if backends else "none"))
+        if not backends:
+            print("\nNOVA works without one - it will say so wherever a browser "
+                  "would have helped.\nTo add one:\n"
+                  "  pip install playwright\n"
+                  "  playwright install chromium")
+            return EXIT_NO_FINDINGS
+        print("\nNOVA will use a throwaway profile unless you pass "
+              "--browser-profile.\nIt never reads cookies, passwords or history "
+              "from a profile you give it.")
+        return EXIT_OK
+
+    options = BrowserOptions(headless=not args.show, profile=args.profile)
+    if args.action == "setup":
+        if not backends:
+            print("no backend installed. Run:\n  pip install playwright\n"
+                  "  playwright install chromium", file=sys.stderr)
+            return EXIT_NO_FINDINGS
+        browser = open_browser(options)
+        ok = getattr(browser, "available", False)
+        print(f"backend: {browser.name}  started: {'yes' if ok else 'no'}")
+        if ok and args.profile:
+            print(f"profile kept at: {args.profile}")
+        browser.close()
+        return EXIT_OK if ok else EXIT_NO_FINDINGS
+
+    browser = open_browser(options)
+    try:
+        page = browser.navigate(args.url)
+        print(f"backend : {browser.name}")
+        print(f"url     : {page.url}")
+        print(f"status  : {page.status or '-'}")
+        print(f"title   : {page.title or '-'}")
+        print(f"text    : {len(page.text)} characters")
+        print(f"links   : {len(page.links)}")
+        if page.screenshot:
+            print(f"shot    : {page.screenshot}")
+        if page.human_action:
+            print(f"\nHUMAN ACTION REQUIRED: {page.human_action}")
+            print(f"open {page.url} yourself; NOVA will not work around it")
+            return EXIT_NO_FINDINGS
+        if page.error:
+            print(f"\nerror: {page.error}", file=sys.stderr)
+            return EXIT_NO_FINDINGS
+        return EXIT_OK
+    finally:
+        browser.close()
+
+
+# ----------------------------------------------------------------- investigate
+
+
+def cmd_investigate(args: argparse.Namespace, manager: Any, cfg: Any,
+                    build_brief: Any, budget_for: Any, open_store: Any,
+                    save_case: Any, resolve_output: Any) -> int:
+    """The headline command. Dependencies are passed in rather than imported
+    so this module does not import ``cli`` and create a cycle."""
+    from .core import brief as briefing
+
+    try:
+        brief = build_brief(args)
+    except briefing.BriefError as exc:
+        print(exc, file=sys.stderr)
+        return EXIT_USAGE
+
+    if not args.target:
+        seeds = brief.seeds if brief else []
+        if not seeds:
+            print("give something to investigate, for example:\n"
+                  "  nova investigate \"Ada Lovelace\"\n"
+                  "  nova investigate ada@example.org\n"
+                  "  nova investigate -K name='Ada Lovelace' -K employer=Acme",
+                  file=sys.stderr)
+            return EXIT_USAGE
+        args.target = seeds[0].value
+        args.type = args.type or briefing.SEEDABLE[seeds[0].kind].value
+
+    ttype = TargetType(args.type) if args.type else detect_type(args.target)
+    if ttype is TargetType.UNKNOWN:
+        print(f"could not work out what {args.target!r} is; pass --type",
+              file=sys.stderr)
+        return EXIT_USAGE
+
+    if args.allow_paid:
+        cfg.set_option("allow_paid", True)
+
+    budget = budget_for(args)
+    if args.time_limit:
+        budget.max_seconds = float(args.time_limit)
+
+    plan, _ = plan_for(args.target, cfg, target_type=ttype, brief=brief,
+                       max_queries=max(0, args.max_queries))
+    if args.dry_run:
+        print(f"target: {args.target}  ({ttype.value})")
+        print(f"budget: depth {budget.max_depth}, {budget.max_entities} entities, "
+              f"{budget.max_seconds:.0f}s")
+        print(f"\n{len(plan.queries)} quer{'y' if len(plan.queries) == 1 else 'ies'}, "
+              "most identifying first:")
+        for q in plan.queries:
+            mark = "  (ambiguous - may be about anyone with this name)" \
+                if q.ambiguous else ""
+            print(f"  {q.value:>5.2f}  [{q.category.label}] {q.text}{mark}")
+            print(f"         {q.rationale}")
+        return EXIT_OK
+
+    browser = None
+    if args.browser:
+        browser = open_browser(BrowserOptions(headless=not args.browser_show,
+                                              profile=args.browser_profile))
+        if not getattr(browser, "available", False) and not args.quiet:
+            print("no browser backend started; continuing without one "
+                  "(run: nova browser status)", file=sys.stderr)
+
+    store = open_store(args)
+    evidence = store.evidence if store is not None else None
+    started = time.time()
+    last: list[str] = []
+
+    def on_progress(stages: Any) -> None:
+        if args.quiet or not sys.stderr.isatty():
+            return
+        text = "  ".join(s.name for s in stages if s.state == "running")
+        if text and text not in last:
+            last.append(text)
+            print(f"\r  {text} …", end="", file=sys.stderr, flush=True)
+
+    try:
+        report = run_investigation(
+            args.target, cfg, target_type=ttype, brief=brief if len(brief) > 1 else None,
+            budget=budget, browser=browser, evidence=evidence,
+            only=args.only.split(",") if args.only else None,
+            exclude=args.exclude.split(",") if args.exclude else None,
+            on_progress=on_progress, max_queries=max(0, args.max_queries),
+        )
+    finally:
+        if browser is not None:
+            browser.close()
+
+    if not args.quiet and sys.stderr.isatty():
+        print("\r" + " " * 60 + "\r", end="", file=sys.stderr)
+
+    inv = report.investigation
+    case_id = save_case(store, args, inv)
+    if store is not None:
+        store.close()
+
+    if not args.quiet:
+        print(report.tree(), file=sys.stderr)
+        print(file=sys.stderr)
+
+    rendered = inv
+    if args.redact:
+        from .core.graphview import Redactor, redact_investigation
+
+        redactor = Redactor(True, args.redact_salt)
+        rendered = redact_investigation(inv, redactor)
+
+    if args.format == "console":
+        out = reporting.render_console(rendered, verbose=args.verbose > 0,
+                                       min_severity=Severity(args.min_severity))
+    elif args.format == "json":
+        out = reporting.render_json(rendered)
+    else:
+        out = reporting.RENDERERS[args.format](rendered)
+
+    if case_id and not args.quiet:
+        print(case_id, file=sys.stderr)
+
+    if args.output:
+        destination = resolve_output(args.output, cfg)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(out, "utf-8")
+        print(f"wrote {destination}  ({len(inv.findings)} findings, "
+              f"{time.time() - started:.1f}s)", file=sys.stderr)
+    else:
+        sys.stdout.write(out if out.endswith("\n") else out + "\n")
+
+    return EXIT_OK if inv.findings else EXIT_NO_FINDINGS

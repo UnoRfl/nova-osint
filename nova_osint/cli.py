@@ -154,6 +154,10 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--no-art", action="store_true", help="keep the progress line, drop the ASCII art")
     _common(scan)
 
+    from .investigation_cli import add_parsers as _investigation_parsers
+
+    _investigation_parsers(sub, _common, _search_flags)
+
     mods = sub.add_parser("modules", help="list available modules")
     mods.add_argument("-t", "--type", choices=[t.value for t in TargetType],
                       help="only modules that accept this target type")
@@ -734,6 +738,21 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "scan":
         return cmd_scan(args)
+    if args.command == "investigate":
+        from .investigation_cli import cmd_investigate
+
+        manager, cfg = load_config(args)
+        for problem in manager.problems:
+            print(f"config: {problem}", file=sys.stderr)
+        if not args.quiet and not args.no_art:
+            art.intro(sys.stderr)
+        return cmd_investigate(args, manager, cfg, _build_brief, _budget,
+                               _open_store, _save_case, _resolve_output)
+    if args.command == "browser":
+        from .investigation_cli import cmd_browser
+
+        _, cfg = load_config(args)
+        return cmd_browser(args, cfg)
     if args.command == "modules":
         return cmd_modules(args)
     if args.command == "config":

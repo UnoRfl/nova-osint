@@ -864,6 +864,69 @@ def _reason(health: Health, engine: SearchEngine) -> str:
     }.get(health, health.value)
 
 
+class BrowserSearchEngine(SearchEngine):
+    """A search run in the operator's own browser, on the ordinary result page.
+
+    Not registered as a provider and not in :data:`DEFAULT_ORDER`: it exists
+    only when the operator passed ``--browser``, and it is constructed with a
+    live :class:`~nova_osint.core.browser.BrowserProvider` rather than found by
+    name. That asymmetry is deliberate - a browser is a resource somebody
+    started, not a source that is simply there.
+
+    A challenge page here is reported exactly as it is everywhere else: the
+    kind of wall, the URL, and no attempt to get past it.
+    """
+
+    info = ProviderInfo(
+        name="browser-search", label="Browser search",
+        availability=Availability.FREE, method=Method.BROWSER,
+        source_type=SourceType.SEARCH_ENGINE,
+        notes="Your own browser, on the ordinary result page.",
+    )
+
+    def __init__(self, browser: Any, config: Any = None,
+                 engine: str = "duckduckgo") -> None:
+        super().__init__(None, config)
+        self.browser = browser
+        self.engine = engine
+
+    def build_url(self, query: str, page: int = 0) -> str:
+        from .browser import search_url
+
+        return search_url(query, self.engine)
+
+    def health(self, health: ProviderHealth | None = None) -> Health:
+        if self.browser is None or not getattr(self.browser, "available", False):
+            return Health.UNAVAILABLE
+        return super().health(health)
+
+    def search(self, query: str, limit: int = 10, *, robots: Any = None) -> Any:
+        page = self.browser.search(query, self.engine)
+        if page.human_action:
+            return _Refused(AccessLike.HUMAN_ACTION, page.describe())
+        if not page.ok:
+            return _Refused(AccessLike.UNAVAILABLE, page.describe())
+
+        results = _parse_serp(page.html or "", query, "browser-search",
+                              skip_hosts=_SERP_SELF_HOSTS)[:limit]
+        acq = page.acquisition("browser-search", query=query)
+        acq.source_type = SourceType.SEARCH_ENGINE
+        for res in results:
+            res.acquisition = acq
+        return results
+
+    @classmethod
+    def parse(cls, payload: str, query: str) -> list[SearchResult]:
+        return _parse_serp(payload, query, "browser-search",
+                           skip_hosts=_SERP_SELF_HOSTS)
+
+
+#: Hosts that appear on every result page as navigation rather than results.
+_SERP_SELF_HOSTS = ("duckduckgo.com", "google.com", "bing.com", "mojeek.com",
+                    "startpage.com", "brave.com", "microsoft.com",
+                    "googleadservices.com", "gstatic.com")
+
+
 #: Filled by the decorators above. Kept separate from the provider registry so
 #: that a non-search provider can never end up in the engine order.
 _ENGINES: dict[str, type[SearchEngine]] = {
