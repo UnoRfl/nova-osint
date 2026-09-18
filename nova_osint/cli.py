@@ -753,6 +753,11 @@ def main(argv: list[str] | None = None) -> int:
 
         _, cfg = load_config(args)
         return cmd_browser(args, cfg)
+    if args.command == "image":
+        from .investigation_cli import cmd_image
+
+        _, cfg = load_config(args)
+        return cmd_image(args, cfg)
     if args.command == "modules":
         return cmd_modules(args)
     if args.command == "config":

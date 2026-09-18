@@ -90,6 +90,16 @@ def add_parsers(sub: Any, common: Any, search_flags: Any) -> None:
     search_flags(inv)
     common(inv)
 
+    img = sub.add_parser("image",
+                         help="read one image for clues, locally and offline")
+    img.add_argument("path", nargs="+", help="image file(s) to read")
+    img.add_argument("--no-ocr", action="store_true",
+                     help="skip text extraction")
+    img.add_argument("--compare", action="store_true",
+                     help="report how similar the supplied images are")
+    img.add_argument("-f", "--format", choices=("text", "json"), default="text")
+    common(img)
+
     br = sub.add_parser("browser",
                         help="check or set up the browser NOVA can drive")
     br.add_argument("action", nargs="?", default="status",
@@ -155,6 +165,81 @@ def cmd_browser(args: argparse.Namespace, cfg: Any) -> int:
         return EXIT_OK
     finally:
         browser.close()
+
+
+# ----------------------------------------------------------------------- image
+
+
+def cmd_image(args: argparse.Namespace, cfg: Any) -> int:
+    """Read images locally. No network, no account, no face matching."""
+    import json
+
+    from .core.imageint import analyse, hamming
+
+    facts = [analyse(p, do_ocr=not args.no_ocr) for p in args.path]
+
+    if args.format == "json":
+        out: dict[str, Any] = {"images": [f.to_dict() for f in facts]}
+        if args.compare and len(facts) > 1:
+            out["comparisons"] = _comparisons(facts, hamming)
+        print(json.dumps(out, indent=2, default=str))
+        return EXIT_OK if any(f.sha256 for f in facts) else EXIT_NO_FINDINGS
+
+    for f in facts:
+        print(f"\n{f.path}")
+        print(f"  {f.format or 'unknown format'}  {f.width}x{f.height}"
+              f"  ({f.megapixels} MP)  {f.size_bytes:,} bytes")
+        print(f"  sha256   {f.sha256}")
+        if f.ahash:
+            print(f"  ahash    {f.ahash}    dhash {f.dhash}")
+        if f.camera:
+            print(f"  camera   {f.camera}")
+        if f.taken_at:
+            print(f"  taken    {f.taken_at}")
+        if f.software:
+            print(f"  software {f.software}")
+        if f.gps:
+            lat, lon = f.gps
+            print(f"  gps      {lat}, {lon}"
+                  f"   https://www.openstreetmap.org/?mlat={lat}&mlon={lon}")
+        if f.text:
+            first = " / ".join(line.strip() for line in f.text.splitlines()
+                               if line.strip())[:300]
+            print(f"  text     {first}")
+        if f.clues:
+            print("  clues:")
+            for kind, value in f.clues[:15]:
+                print(f"    {kind:<9} {value}")
+        for stage, reason in f.gaps:
+            print(f"  not checked: {stage} - {reason}")
+
+    if args.compare and len(facts) > 1:
+        print("\ncomparisons (bit distance; under 10 is the same picture, "
+              "over 20 is a different one)")
+        for row in _comparisons(facts, hamming):
+            print(f"  {row['a']}  vs  {row['b']}: "
+                  f"ahash {row['ahash']}, dhash {row['dhash']}  - {row['reading']}")
+        print("\n  Note: this compares pictures, not people. Two photographs "
+              "of one person\n  are two different pictures and will read as "
+              "unrelated here.")
+    return EXIT_OK if any(f.sha256 for f in facts) else EXIT_NO_FINDINGS
+
+
+def _comparisons(facts: list[Any], hamming: Any) -> list[dict[str, Any]]:
+    rows = []
+    for i, a in enumerate(facts):
+        for b in facts[i + 1:]:
+            ah = hamming(a.ahash, b.ahash)
+            dh = hamming(a.dhash, b.dhash)
+            worst = max(ah, dh)
+            reading = ("the same picture" if worst <= 10 else
+                       "possibly a re-edit of the same picture" if worst <= 20
+                       else "different pictures")
+            if not a.ahash or not b.ahash:
+                reading = "not comparable (perceptual hashing needs Pillow)"
+            rows.append({"a": a.path, "b": b.path, "ahash": ah, "dhash": dh,
+                         "reading": reading})
+    return rows
 
 
 # ----------------------------------------------------------------- investigate
@@ -241,6 +326,7 @@ def cmd_investigate(args: argparse.Namespace, manager: Any, cfg: Any,
             only=args.only.split(",") if args.only else None,
             exclude=args.exclude.split(",") if args.exclude else None,
             on_progress=on_progress, max_queries=max(0, args.max_queries),
+            images=list(args.image or []),
         )
     finally:
         if browser is not None:

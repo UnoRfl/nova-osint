@@ -292,8 +292,8 @@ def stub_engine(monkeypatch):
 def test_an_investigation_runs_every_stage_and_says_how_each_went(stub_engine) -> None:
     report = investigate("Ada Lovelace", Cfg(), budget=Budget.quick())
     names = [s.name for s in report.stages]
-    assert names == ["plan", "search", "sources", "expansion", "follow-up",
-                     "correlation", "identity"]
+    assert names == ["plan", "images", "search", "sources", "expansion",
+                     "follow-up", "correlation", "identity"]
     assert all(s.state != "pending" for s in report.stages), \
         "a stage left pending tells the reader nothing about what happened"
 

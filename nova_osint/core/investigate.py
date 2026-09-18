@@ -108,6 +108,8 @@ class InvestigationReport:
     queries_run: int = 0
     rounds: int = 0
     stopped_by: str = ""
+    #: ``imageint.ImageFacts`` for anything the operator handed in.
+    images: list[Any] = field(default_factory=list)
 
     def tree(self) -> str:
         """The live tree, as text. The same shape the GUI renders."""
@@ -183,7 +185,8 @@ def investigate(target: str, config: Any, *, target_type: TargetType | None = No
                 browser: Any = None, evidence: Any = None,
                 only: list[str] | None = None, exclude: list[str] | None = None,
                 on_progress: ProgressFn | None = None,
-                max_queries: int = 8, follow_up_rounds: int = 1
+                max_queries: int = 8, follow_up_rounds: int = 1,
+                images: list[str] | None = None
                 ) -> InvestigationReport:
     """Run the whole thing: plan, expand, follow up, resolve.
 
@@ -199,6 +202,7 @@ def investigate(target: str, config: Any, *, target_type: TargetType | None = No
 
     stages = [
         Stage("plan", "done", f"{len(plan.queries)} quer{'y' if len(plan.queries) == 1 else 'ies'}"),
+        Stage("images"),
         Stage("search"),
         Stage("sources"),
         Stage("expansion"),
@@ -216,8 +220,20 @@ def investigate(target: str, config: Any, *, target_type: TargetType | None = No
     health = ProviderHealth()
     engine = Engine(config, evidence=evidence)
     try:
-        # -- search ---------------------------------------------------------
         by_name = {s.name: s for s in stages}
+
+        # -- images ---------------------------------------------------------
+        # Before search, because an image's clues are among the most
+        # identifying things an operator can supply: a conference banner turns
+        # a bare name into a name and an event.
+        image_facts, image_queries = _read_images(images, planner, target,
+                                                  by_name["images"])
+        report.images = image_facts
+        if image_queries:
+            plan.queries = plan.queries + image_queries
+        tick()
+
+        # -- search ---------------------------------------------------------
         by_name["search"].state = "running"
         tick()
         service = _search_service(engine, config, health, browser)
@@ -296,6 +312,42 @@ def investigate(target: str, config: Any, *, target_type: TargetType | None = No
         return report
     finally:
         engine.close()
+
+
+def _read_images(images: list[str] | None, planner: QueryPlanner, subject: str,
+                 stage: Stage) -> tuple[list[Any], list[Any]]:
+    """Read every supplied image locally and turn its clues into queries.
+
+    The stage reports the *gaps* as loudly as the findings: an operator who
+    supplied a photograph and got no text back needs to know whether the image
+    had none or whether no OCR engine is installed, and those are one line
+    apart in the output and a world apart in meaning.
+    """
+    if not images:
+        stage.state = "empty"
+        stage.detail = "no image supplied"
+        return [], []
+
+    from .imageint import analyse, clues_to_queries
+
+    stage.state = "running"
+    facts: list[Any] = []
+    queries: list[Any] = []
+    gaps: set[str] = set()
+    for path in images:
+        got = analyse(path)
+        facts.append(got)
+        queries += clues_to_queries(got, planner, subject)
+        gaps.update(reason for _, reason in got.gaps)
+
+    clue_count = sum(len(f.clues) for f in facts)
+    stage.count = clue_count
+    stage.state = "done" if clue_count else "empty"
+    stage.detail = (f"{len(facts)} image(s), {clue_count} clue(s), "
+                    f"{len(queries)} quer(ies)")
+    if gaps:
+        stage.reason = "; ".join(sorted(gaps)[:2])
+    return facts, queries
 
 
 def _search_service(engine: Engine, config: Any, health: ProviderHealth,

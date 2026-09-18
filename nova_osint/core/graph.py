@@ -105,6 +105,11 @@ EVIDENCE: dict[str, float] = {
     # behavioural / fingerprint ---------------------------------------------
     "favicon-hash": 2.5,
     "page-structure-hash": 2.0,
+    #: The document's own properties name this person. Strong, because it
+    #: records an account that was logged in when the file was saved -
+    #: and short of proof, because templates, shared machines and
+    #: conversion services all put somebody else's name in the field.
+    "document-author": 1.8,
     "stylometry-match": 1.5,
     "timezone-agreement": 0.6,
     # weak string-level ------------------------------------------------------

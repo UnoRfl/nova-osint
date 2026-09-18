@@ -159,6 +159,7 @@ def import_modules() -> None:
     from ..modules import (  # noqa: F401
         breach,
         correlators,
+        documents,
         domain,
         dorks,
         email,
