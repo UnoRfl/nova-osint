@@ -83,10 +83,25 @@ class Value:
     source: str
     grade: str
     url: str | None = None
+    #: The finding's own ``source`` - "wikidata", "heuristic", "parse" - as
+    #: opposed to :attr:`source`, which is the *module* that reported it.
+    #:
+    #: The two differ in exactly the case that matters for weighting. The email
+    #: module reports both a parsed domain and a guessed real name; attributing
+    #: the guess to "email" loses the one word that says it was a guess, and a
+    #: downstream scorer then has no way to rank "possible real name" below a
+    #: name a registry published. Kept optional so nothing that builds a Value
+    #: by hand has to change.
+    origin: str = ""
+
+    @property
+    def basis(self) -> str:
+        """The most specific attribution available, for scoring."""
+        return self.origin or self.source
 
     def to_dict(self) -> dict[str, Any]:
         return {"value": self.text, "source": self.source, "grade": self.grade,
-                "url": self.url}
+                "url": self.url, "origin": self.origin}
 
 
 @dataclass
@@ -184,7 +199,7 @@ def extract(inv: Investigation) -> list[Subject]:
                     bucket.setdefault(name, []).append(Value(
                         text=text, source=result.module,
                         grade=_GRADE_FOR.get(finding.confidence, "D3"),
-                        url=finding.url))
+                        url=finding.url, origin=str(finding.source or "")))
                 break
 
     named = sorted(k for k in per_person if k)
@@ -255,15 +270,24 @@ def _dedupe(values: list[Value]) -> list[Value]:
     # string: "ip" is a substring of "abuseipdb", so a substring test drops the
     # second source and the line claims one witness where there were two.
     sources: dict[str, list[str]] = {}
+    # ``origin`` is merged the same way, and for the same reason: rebuilding
+    # the Value without it silently discarded the one field that says whether a
+    # name was published by a registry or guessed from an email local part.
+    origins: dict[str, list[str]] = {}
     for value in values:
         key = value.text.casefold()
         if key in by_text:
             if value.source not in sources[key]:
                 sources[key].append(value.source)
                 by_text[key].source = ", ".join(sources[key])
+            if value.origin and value.origin not in origins[key]:
+                origins[key].append(value.origin)
+                by_text[key].origin = ", ".join(origins[key])
             continue
-        by_text[key] = Value(value.text, value.source, value.grade, value.url)
+        by_text[key] = Value(value.text, value.source, value.grade, value.url,
+                             origin=value.origin)
         sources[key] = [value.source]
+        origins[key] = [value.origin] if value.origin else []
     return list(by_text.values())
 
 

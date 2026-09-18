@@ -429,6 +429,72 @@ so a malformed module fails the suite immediately.
 
 ---
 
+## The dossier layer
+
+`report` groups output by module, `profile` groups it by entity kind, and
+`biography` groups it by attribute label. All three are the right shape for
+checking the tool's work and the wrong shape for reading it: none of them
+answers "so what do you know about this person" in one place.
+
+`core/target_dossier.py` does, via `generate_target_dossier(inv)`. It is a pure
+read over a finished `Investigation` - no network, so it re-runs identically
+over a stored case or a replayed one - and it returns one `Dossier` with the
+shape `identity` / `background` / `digital_footprint` / `confidence`.
+
+Rendered with `-f dossier` (Markdown) or `-f dossier-json`, and shown in the
+desktop app's **Dossier** tab, which is built from the same function so the two
+surfaces cannot drift apart.
+
+### The evidence model
+
+`core/scoring.py` is the part that makes the dossier honest, and it is
+deliberately free of any import from the rest of the package.
+
+Every field is an `EvidenceSet` rather than a value. There is no API on it that
+replaces anything: `add` can only merge or append, so "never silently
+overwrite" is structural rather than a rule each caller has to remember.
+
+- **Merging keeps provenance.** Two sources asserting one value become one
+  record naming both, and the score gains a capped corroboration bonus. That
+  bonus can never reach 1.0, because a value must not become certain by
+  repetition.
+- **Competing values are ranked, not resolved.** Two dates of birth from two
+  sources produce two rows and a `disputed` flag. The renderers print both and
+  say nothing has been chosen.
+- **A multi-valued field never reports a conflict.** A second phone number is
+  ordinary. Only single-valued fields can contradict.
+- **`SOURCE_WEIGHTS` is the single place** that decides what a class of source
+  is worth, so every number in a dossier traces to one reviewable line.
+- **Synthetic values never earn corroboration** and are carried through every
+  layer still marked synthetic; the Markdown renderer refuses to print a
+  dossier containing one without a banner.
+
+### Two things it will not do
+
+**It will not invent a role-to-employer pairing.** A source that carried both
+("Systems Administrator at Acme") is split and paired. One company and one role
+are paired because there is no other candidate pairing to be wrong about.
+Three companies and two roles are left unpaired with `role_paired=False`, and
+the report says so. Zipping the two lists manufactures plausible, checkable,
+wrong sentences - the worst failure mode this tool has.
+
+**It will not read credentials.** `modules/exposure_parser.py` extracts the
+biographical metadata around an exposure record through two independent gates:
+an allowlist of fields, so an unrecognised `ntlm_hash:` column is refused by
+default rather than by having been anticipated, and a value-shape guard, so a
+credential hiding inside a permitted field is dropped anyway. Credential
+columns are *named* in the output and never read, because a reader who knows a
+dump had a password column can reason about it; one shown a thinner record
+silently cannot.
+
+### Scoring a guess as a guess
+
+`biography.Value` carries `origin` - the finding's own `source` - alongside
+`source`, which is the *module*. The two differ in exactly the case that
+matters: the email module reports both a parsed domain and a name guessed from
+the local part, and attributing the guess to "email" loses the one word that
+said it was a guess. Read `Value.basis` when weighting, never `Value.source`.
+
 ## Adding a new output format
 
 Write `render_myformat(inv: Investigation) -> str` in `core/report.py` and add

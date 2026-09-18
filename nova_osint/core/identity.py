@@ -376,6 +376,17 @@ def compare(claim: Claim, found: str) -> tuple[Verdict, str]:
         return Verdict.CONTRADICTS, "a different domain"
     if kind is ClaimKind.BORN:
         return _date(want, got)
+    if kind in (ClaimKind.COUNTRY, ClaimKind.LANGUAGE):
+        # Both sides through the same vocabulary. The claim was normalised when
+        # it was added, but the source's spelling arrives raw, and "UK" against
+        # a claim of "United Kingdom" shares no whole word - so without this the
+        # two most common spellings of one country read as two countries.
+        from .vocab import country as canon_country
+        from .vocab import language as canon_language
+
+        resolve_one = (canon_country if kind is ClaimKind.COUNTRY
+                       else canon_language)
+        return _textual(want, (resolve_one(got) or got), kind)
     if kind is ClaimKind.KEYWORD:
         # Absence of a keyword is never evidence against - people do not list
         # everything true of them - so this can only ever confirm.

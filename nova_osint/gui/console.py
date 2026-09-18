@@ -90,6 +90,7 @@ class ConsoleScreen(ttk.Frame):
         self.investigation: Investigation | None = None
         #: tag name -> url, for the clickable links in the Profile tab.
         self._profile_links: dict[str, str] = {}
+        self._dossier_links: dict[str, str] = {}
         #: Progress bookkeeping for the status bar.
         self._total = 0
         self._running_modules: list[str] = []
@@ -211,16 +212,21 @@ class ConsoleScreen(ttk.Frame):
                              state="readonly", width=12,
                              font=("Segoe UI", 8))
         kinds.pack(side="left")
+        kinds.bind("<<ComboboxSelected>>", lambda _e: self._swap_value_widget())
 
-        border = tk.Frame(entry_row, bg=theme.LINE, padx=1, pady=1)
-        border.pack(side="left", padx=(8, 8))
+        # The value input is swapped for the kind rather than being one box for
+        # everything. A date typed freehand arrives in six formats and half of
+        # them do not parse; a country typed freehand arrives as "UK", "U.K."
+        # or "England" and only some of those match. Offering the answers is
+        # what makes the field answerable.
+        self._value_mode = "text"
         self.brief_value = tk.StringVar()
-        value = tk.Entry(border, textvariable=self.brief_value, width=26,
-                         bg=theme.BG_INPUT, fg=theme.INK, relief="flat",
-                         insertbackground=theme.MAGENTA, font=("Consolas", 9),
-                         highlightthickness=0, bd=0)
-        value.pack(ipady=4, ipadx=6)
-        value.bind("<Return>", lambda _e: self._add_brief_fact())
+        self.brief_day = tk.StringVar(value="—")
+        self.brief_month = tk.StringVar(value="—")
+        self.brief_year = tk.StringVar(value="—")
+        self.value_holder = tk.Frame(entry_row, bg=theme.BG)
+        self.value_holder.pack(side="left", padx=(8, 8))
+        self._swap_value_widget()
 
         self.brief_sure = tk.BooleanVar(value=True)
         ttk.Checkbutton(entry_row, text="sure", variable=self.brief_sure).pack(
@@ -247,8 +253,83 @@ class ConsoleScreen(ttk.Frame):
         self.brief_chips.grid(row=1, column=0, columnspan=2, sticky="w",
                               pady=(7, 0))
 
+    def _swap_value_widget(self) -> None:
+        """Rebuild the value input to suit the fact being entered."""
+        from ..core import vocab
+
+        for child in self.value_holder.winfo_children():
+            child.destroy()
+        kind = dict(BRIEF_KINDS)[self.brief_kind.get()]
+
+        if kind == "born":
+            self._value_mode = "date"
+            self.brief_day.set("—")
+            self.brief_month.set("—")
+            self.brief_year.set("—")
+            # Year first and required; day and month optional, because knowing
+            # only the year is the ordinary case and a picker that demands a
+            # full date makes the user invent one. The resolver already
+            # compares only as much as both sides state.
+            for var, values, width in (
+                (self.brief_year, ["—", *vocab.years()], 6),
+                (self.brief_month, ["—", *vocab.MONTHS], 10),
+                (self.brief_day, ["—", *(str(d) for d in range(1, 32))], 4),
+            ):
+                ttk.Combobox(self.value_holder, textvariable=var, values=values,
+                             state="readonly", width=width,
+                             font=("Segoe UI", 8)).pack(side="left", padx=(0, 4))
+            return
+
+        choices = {"country": vocab.COUNTRIES, "language": vocab.LANGUAGES,
+                   "role": vocab.ROLES}.get(kind)
+        if choices:
+            self._value_mode = "choice"
+            self.brief_value.set("")
+            box = ttk.Combobox(self.value_holder, textvariable=self.brief_value,
+                               values=list(choices), width=24,
+                               font=("Segoe UI", 8))
+            box.pack(side="left")
+            box.bind("<Return>", lambda _e: self._add_brief_fact())
+            # Typing narrows the list. With 195 countries an unfiltered
+            # dropdown is a scroll, not a choice - and the box stays editable
+            # so anything missing can still be typed.
+            def narrow(_event, box=box, all_values=list(choices)) -> None:
+                typed = self.brief_value.get().strip().casefold()
+                box.configure(values=[v for v in all_values
+                                      if typed in v.casefold()] or all_values)
+            box.bind("<KeyRelease>", narrow)
+            return
+
+        self._value_mode = "text"
+        self.brief_value.set("")
+        border = tk.Frame(self.value_holder, bg=theme.LINE, padx=1, pady=1)
+        border.pack(side="left")
+        entry = tk.Entry(border, textvariable=self.brief_value, width=26,
+                         bg=theme.BG_INPUT, fg=theme.INK, relief="flat",
+                         insertbackground=theme.MAGENTA, font=("Consolas", 9),
+                         highlightthickness=0, bd=0)
+        entry.pack(ipady=4, ipadx=6)
+        entry.bind("<Return>", lambda _e: self._add_brief_fact())
+
+    def _read_brief_value(self) -> str:
+        """Whatever the active input amounts to, as one string."""
+        if self._value_mode != "date":
+            return self.brief_value.get().strip()
+        from ..core import vocab
+
+        year = self.brief_year.get()
+        if year in ("", "—"):
+            return ""
+        month, day = self.brief_month.get(), self.brief_day.get()
+        if month in ("", "—") or day in ("", "—"):
+            # Year alone is a real answer, not an incomplete one: it separates
+            # two people with the same name born a decade apart, which is most
+            # of what a birth date is for here.
+            return year
+        return f"{year}-{vocab.MONTHS.index(month) + 1:02d}-{int(day):02d}"
+
     def _add_brief_fact(self) -> None:
-        value = self.brief_value.get().strip()
+        value = self._read_brief_value()
         if not value:
             return
         kind = dict(BRIEF_KINDS)[self.brief_kind.get()]
@@ -493,6 +574,51 @@ class ConsoleScreen(ttk.Frame):
                  "a second fact is what tells them apart")
         self.ident_empty.place(relx=0.5, rely=0.45, anchor="center")
 
+        # --- dossier
+        # Identity answers "which of these is them". This answers "what do we
+        # know about them", consolidated into one subject with every competing
+        # value kept beside its source. It sits ahead of Profile because it is
+        # the answer and Profile is the working.
+        dossier = tk.Frame(nb, bg=theme.BG_PANEL)
+        nb.add(dossier, text="  Dossier  ")
+        dossier.rowconfigure(0, weight=1)
+        dossier.columnconfigure(0, weight=1)
+        self.dossierbox = tk.Text(
+            dossier, bg=theme.BG_PANEL, fg=theme.INK, relief="flat",
+            highlightthickness=0, bd=0, font=("Consolas", 9), wrap="none",
+            padx=14, pady=12, spacing1=1, cursor="arrow")
+        self.dossierbox.grid(row=0, column=0, sticky="nsew")
+        dsb = ttk.Scrollbar(dossier, orient="vertical",
+                            command=self.dossierbox.yview)
+        dsb.grid(row=0, column=1, sticky="ns")
+        dsbx = ttk.Scrollbar(dossier, orient="horizontal",
+                             command=self.dossierbox.xview)
+        dsbx.grid(row=1, column=0, sticky="ew")
+        self.dossierbox.configure(yscrollcommand=dsb.set, xscrollcommand=dsbx.set)
+        for name, colour in (
+            ("h1", theme.ORCHID), ("h2", theme.CYAN), ("plain", theme.INK),
+            ("dim", theme.INK_FAINT), ("ok", theme.OK), ("warnrow", theme.HIGH),
+            ("notable", theme.NOTABLE), ("weak", theme.INK_DIM),
+        ):
+            self.dossierbox.tag_configure(name, foreground=colour)
+        self.dossierbox.tag_configure("h1", font=("Consolas", 12, "bold"))
+        self.dossierbox.tag_configure("h2", font=("Consolas", 9, "bold"))
+        self.dossierbox.tag_configure("link", foreground=theme.CYAN,
+                                      underline=True)
+        self.dossierbox.tag_bind(
+            "link", "<Enter>",
+            lambda _e: self.dossierbox.configure(cursor="hand2"))
+        self.dossierbox.tag_bind(
+            "link", "<Leave>",
+            lambda _e: self.dossierbox.configure(cursor="arrow"))
+        self.dossierbox.tag_bind("link", "<Button-1>", self._open_dossier_link)
+        self.dossierbox.configure(state="disabled")
+        self.dossier_empty = tk.Label(
+            dossier, bg=theme.BG_PANEL, fg=theme.INK_FAINT, justify="center",
+            font=("Segoe UI", 10),
+            text="no dossier yet\n\nrun a scan and this consolidates it")
+        self.dossier_empty.place(relx=0.5, rely=0.45, anchor="center")
+
         # --- profile
         # Findings answers "what did each module say". This answers "who is
         # this" - the same investigation grouped by subject, with the social
@@ -595,9 +721,13 @@ class ConsoleScreen(ttk.Frame):
         tk.Label(btns, text="export", bg=theme.BG_PANEL, fg=theme.INK_FAINT,
                  font=("Segoe UI", 8)).pack(side="left", padx=(0, 8))
         self.export_btns = []
-        for label, fmt in (("HTML", "html"), ("JSON", "json"),
-                           ("CSV", "csv"), ("MD", "markdown")):
-            b = ttk.Button(btns, text=label, width=6,
+        # DOSSIER first: it is what the Dossier tab shows, and exporting the
+        # thing on screen should not mean knowing that it is called "markdown".
+        for label, fmt in (("DOSSIER", "dossier"), ("HTML", "html"),
+                           ("JSON", "json"), ("CSV", "csv"), ("MD", "markdown")):
+            # Width per label rather than one fixed 6: a ttk Button clips
+            # rather than grows, so "DOSSIER" rendered as "DOSSIE".
+            b = ttk.Button(btns, text=label, width=max(6, len(label) + 1),
                            command=lambda f=fmt: self._export(f), state="disabled")
             b.pack(side="left", padx=2)
             self.export_btns.append(b)
@@ -709,6 +839,11 @@ class ConsoleScreen(ttk.Frame):
         self.profilebox.configure(state="disabled")
         self._profile_links.clear()
         self.profile_empty.place(relx=0.5, rely=0.45, anchor="center")
+        self.dossierbox.configure(state="normal")
+        self.dossierbox.delete("1.0", "end")
+        self.dossierbox.configure(state="disabled")
+        self._dossier_links.clear()
+        self.dossier_empty.place(relx=0.5, rely=0.45, anchor="center")
         self.identbox.configure(state="normal")
         self.identbox.delete("1.0", "end")
         self.identbox.configure(state="disabled")
@@ -893,6 +1028,7 @@ class ConsoleScreen(ttk.Frame):
                                       "for this target")
             self.empty.place(relx=0.5, rely=0.45, anchor="center")
         self._render_profile(inv)
+        self._render_dossier(inv)
         self._render_identity(inv)
         for b in self.export_btns:
             b.configure(state="normal")
@@ -1104,6 +1240,148 @@ class ConsoleScreen(ttk.Frame):
 
         self._set_profile(rows)
 
+    def _render_dossier(self, inv: Investigation) -> None:
+        """Draw the consolidated dossier into its tab.
+
+        Built from the same :func:`generate_target_dossier` the CLI renders
+        with ``-f dossier``, so the desktop app cannot drift into showing a
+        different answer from the command line - only a differently styled one.
+        """
+        from ..core.target_dossier import generate_target_dossier
+
+        try:
+            dossier = generate_target_dossier(inv)
+        except Exception as exc:  # noqa: BLE001 - a broken panel must not eat the scan
+            self._set_dossier([(f"  could not build the dossier: {exc}\n",
+                                "warnrow")])
+            return
+
+        rows: list[tuple[str, str]] = []
+        rows.append((f"\n  {dossier.subject or dossier.input_query}\n", "h1"))
+        rows.append((f"  for {dossier.input_query}\n", "dim"))
+        if dossier.subject_confidence is not None:
+            rows.append((f"  subject match {dossier.subject_confidence:.0%}"
+                         f"  {dossier.subject_verdict}\n", "notable"))
+        rows.append(("\n", "plain"))
+
+        if dossier.synthetic:
+            rows.append(("  CONTAINS SYNTHETIC FIXTURE DATA - not findings\n\n",
+                         "warnrow"))
+
+        rows.append(("  IDENTITY\n", "h2"))
+        for label, values in (("name", dossier.full_name),
+                              ("born", dossier.date_of_birth),
+                              ("aliases", dossier.aliases),
+                              ("phone", dossier.phones)):
+            if not values:
+                rows.append((f"    {label:<9}not established\n", "dim"))
+                continue
+            for index, item in enumerate(values):
+                shown = label if index == 0 else ""
+                tag = ("ok" if item.confidence >= 0.8
+                       else "plain" if item.confidence >= 0.5 else "weak")
+                mark = "  (synthetic)" if item.synthetic else ""
+                rows.append((f"    {shown:<9}{item.value}{mark}\n", tag))
+                rows.append((f"             {item.confidence:.2f}  "
+                             f"{', '.join(sorted(set(item.sources)))}\n", "dim"))
+        rows.append(("\n", "plain"))
+
+        rows.append(("  BACKGROUND\n", "h2"))
+        if dossier.education:
+            for record in dossier.education:
+                bits = [record.school_name]
+                if record.degree:
+                    bits.append(record.degree)
+                if record.graduation_year:
+                    bits.append(record.graduation_year)
+                rows.append((f"    school   {'  -  '.join(bits)}\n", "plain"))
+        else:
+            rows.append(("    school   not established\n", "dim"))
+        if dossier.employment:
+            for record in dossier.employment:
+                rows.append((f"    employer {record.company}\n", "plain"))
+                if record.role and record.role_paired:
+                    rows.append((f"             {record.role}\n", "dim"))
+                elif record.role:
+                    rows.append((f"             {record.role}  "
+                                 f"(not tied to this employer)\n", "notable"))
+        else:
+            rows.append(("    employer not established\n", "dim"))
+        rows.append(("\n", "plain"))
+
+        rows.append(("  ACCOUNTS\n", "h2"))
+        if dossier.linked_accounts:
+            for account in dossier.linked_accounts:
+                tag = "ok" if account.basis == "confirmed" else (
+                    "plain" if account.basis == "declared" else "weak")
+                rows.append((f"    {account.platform:<14}", tag))
+                rows.append((account.url + "\n", "link"))
+                rows.append((f"    {'':<14}{account.basis}\n", "dim"))
+        else:
+            rows.append(("    none established\n", "dim"))
+        rows.append(("\n", "plain"))
+
+        if dossier.exposure_records:
+            rows.append(("  EXPOSURE\n", "h2"))
+            rows.append(("    context only - no passwords, hashes or tokens\n",
+                         "dim"))
+            for record in dossier.exposure_records:
+                rows.append((f"    {record.get('source_name', 'record')}\n",
+                             "notable"))
+                if refused := record.get("credential_fields_present"):
+                    rows.append((f"      credential fields present, not read: "
+                                 f"{', '.join(sorted(set(refused)))}\n", "dim"))
+            rows.append(("\n", "plain"))
+
+        if disputes := dossier.disputes:
+            rows.append(("  CONFLICTS\n", "h2"))
+            rows.append(("    nothing has been chosen for you\n", "dim"))
+            for name, values in disputes:
+                rows.append((f"    {name.replace('_', ' ')}\n", "notable"))
+                for item in values:
+                    rows.append((f"      {item.confidence:.2f}  {item.value}"
+                                 f"   {item.source}\n", "plain"))
+            rows.append(("\n", "plain"))
+
+        rows.append(("  COLLECTION GAPS\n", "h2"))
+        if dossier.collection_errors:
+            rows.append(("    absence here means unknown, not none\n", "dim"))
+            for module, status, reason in dossier.collection_errors:
+                # Explicit separators, not padding alone: a status wider than
+                # its column ("unavailable" is 11) otherwise runs straight into
+                # the reason and the two read as one word.
+                rows.append((f"    {module:<14}  {status:<12}  {reason}\n",
+                             "warnrow"))
+        else:
+            rows.append(("    every source answered\n", "ok"))
+
+        self._set_dossier(rows)
+
+    def _set_dossier(self, rows: list[tuple[str, str]]) -> None:
+        self.dossier_empty.place_forget()
+        self.dossierbox.configure(state="normal")
+        self.dossierbox.delete("1.0", "end")
+        self._dossier_links.clear()
+        for text, tag in rows:
+            if tag == "link":
+                # Same mechanism as the Profile tab: a link in a Text widget is
+                # a tag, so each URL needs its own tag to be clickable.
+                name = f"durl{len(self._dossier_links)}"
+                self._dossier_links[name] = text
+                self.dossierbox.insert("end", text, ("link", name))
+            else:
+                self.dossierbox.insert("end", text, (tag,))
+        self.dossierbox.configure(state="disabled")
+
+    def _open_dossier_link(self, event: object) -> None:
+        import webbrowser
+
+        for name in self.dossierbox.tag_names("current"):
+            url = self._dossier_links.get(name)
+            if url:
+                webbrowser.open(url.strip())
+                return
+
     def _set_profile(self, rows: list[tuple[str, str]]) -> None:
         self.profile_empty.place_forget()
         self.profilebox.configure(state="normal")
@@ -1208,12 +1486,16 @@ class ConsoleScreen(ttk.Frame):
     def _export(self, fmt: str) -> None:
         if not self.investigation:
             return
-        ext = {"html": ".html", "json": ".json", "csv": ".csv", "markdown": ".md"}[fmt]
+        ext = {"html": ".html", "json": ".json", "csv": ".csv",
+               "markdown": ".md", "dossier": ".md"}[fmt]
         safe = "".join(c if c.isalnum() or c in "-._" else "_"
                        for c in self.investigation.target)
+        # The dossier and the plain markdown report are both .md, so they need
+        # different default names or one silently offers to overwrite the other.
+        stem = f"nova-dossier-{safe}" if fmt == "dossier" else f"nova-{safe}"
         path = filedialog.asksaveasfilename(
             title="Save report", defaultextension=ext,
-            initialfile=f"nova-{safe}{ext}",
+            initialfile=f"{stem}{ext}",
             filetypes=[(fmt.upper(), f"*{ext}"), ("All files", "*.*")],
         )
         if not path:

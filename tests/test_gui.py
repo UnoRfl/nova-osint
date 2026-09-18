@@ -216,11 +216,64 @@ def _social_investigation():
 
 
 def test_the_result_tabs_are_in_the_order_a_reader_wants_them(console) -> None:
-    """Identity before Profile: "which of these is them" is the question,
-    and everything in the other tabs is working."""
+    """Identity, then Dossier, then Profile.
+
+    "Which of these is them" is the question, "what do we know about them" is
+    the answer, and everything in the other tabs is the working.
+    """
     tabs = [console.notebook.tab(i, "text").strip()
             for i in range(console.notebook.index("end"))]
-    assert tabs == ["Findings", "Pivots", "Identity", "Profile", "Live log"]
+    assert tabs == ["Findings", "Pivots", "Identity", "Dossier", "Profile",
+                    "Live log"]
+
+
+def test_finishing_a_scan_fills_the_dossier_tab(console) -> None:
+    console._finish(_social_investigation())
+    text = console.dossierbox.get("1.0", "end")
+
+    assert "IDENTITY" in text
+    assert "ACCOUNTS" in text
+    assert "COLLECTION GAPS" in text
+
+
+def test_the_dossier_tab_reports_gaps_rather_than_implying_none(console) -> None:
+    """The panel must not be the one place a dead source stops being reported."""
+    console._finish(_social_investigation())
+    text = console.dossierbox.get("1.0", "end")
+
+    assert "absence here means unknown, not none" in text
+    assert "keybase" in text and "did not answer" in text
+
+
+def test_a_gap_row_never_runs_its_columns_together(console) -> None:
+    """``unavailable`` is 11 characters and the column was 10 wide, so the
+    status and the reason printed as one word."""
+    console._finish(_social_investigation())
+    text = console.dossierbox.get("1.0", "end")
+
+    assert "unavailablekeybase" not in text
+    assert "unavailable" in text
+
+
+def test_a_new_dossier_replaces_the_previous_one(console) -> None:
+    """A stale dossier under a new target is worse than an empty one."""
+    from nova_osint.core.models import Investigation, TargetType
+
+    console._finish(_social_investigation())
+    assert "alice" in console.dossierbox.get("1.0", "end")
+
+    console._finish(Investigation(target="nobody@example.com",
+                                  target_type=TargetType.EMAIL).finish())
+    assert "alice" not in console.dossierbox.get("1.0", "end")
+
+
+def test_the_dossier_tab_survives_an_empty_scan(console) -> None:
+    from nova_osint.core.models import Investigation, TargetType
+
+    console._finish(Investigation(target="nobody@example.com",
+                                  target_type=TargetType.EMAIL).finish())
+    text = console.dossierbox.get("1.0", "end")
+    assert "not established" in text
 
 
 def test_finishing_a_scan_fills_the_profile_tab(console) -> None:

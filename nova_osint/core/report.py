@@ -44,6 +44,7 @@ STATUS_COLOR = {
     ModuleStatus.UNAVAILABLE: "red",
     ModuleStatus.FAILED: "bold red",
     ModuleStatus.SKIPPED: "dim",
+    ModuleStatus.HUMAN_ACTION: "yellow",
 }
 
 
@@ -73,6 +74,121 @@ def status_rows(inv: Investigation) -> list[tuple[str, str, str]]:
     ]
     rows += [(name, ModuleStatus.SKIPPED.value, reason) for name, reason in inv.skipped]
     return sorted(rows)
+
+
+#: The eight words a source's availability may be reported with, worst last.
+#: They are ordered so a reader scanning the table meets the sources that
+#: answered before the ones that could not, and so ``sorted`` puts the
+#: problems together.
+SOURCE_STATES = ("found", "not found", "not checked", "requires key",
+                 "paid", "rate limited", "blocked", "human action required",
+                 "unavailable")
+_STATE_ORDER = {s: i for i, s in enumerate(SOURCE_STATES)}
+
+_MODULE_STATE = {
+    ModuleStatus.SUCCESS: "found",
+    ModuleStatus.PARTIAL: "found",
+    ModuleStatus.EMPTY: "not found",
+    ModuleStatus.RATE_LIMITED: "rate limited",
+    ModuleStatus.BLOCKED: "blocked",
+    ModuleStatus.UNAVAILABLE: "unavailable",
+    ModuleStatus.FAILED: "unavailable",
+    ModuleStatus.HUMAN_ACTION: "human action required",
+    ModuleStatus.SKIPPED: "not checked",
+}
+
+
+def source_rows(inv: Investigation) -> list[tuple[str, str, str]]:
+    """``[(source, state, detail)]`` for every source this run could have used.
+
+    The table that makes the tool's central promise checkable: **"cannot
+    access" must never render as "no result"**. A module that ran and found
+    nothing, a module that was never asked because it needs a key, a key that
+    costs money, and a source that rate limited us are four different answers,
+    and a reader who is handed one list of findings cannot tell them apart.
+
+    Sources appear here whether or not they produced anything, which is the
+    point - the interesting rows are the ones with no findings behind them.
+    """
+    rows: dict[str, tuple[str, str]] = {}
+
+    for res in inv.results:
+        state = _MODULE_STATE.get(res.status, "unavailable")
+        if state == "found" and not res.findings:
+            state = "not found"
+        detail = res.status_reason
+        if not detail and state == "found":
+            detail = f"{len(res.findings)} finding(s)"
+        rows[res.module] = (state, detail)
+
+    for name, reason in inv.skipped:
+        rows[name] = (_skip_state(reason), reason)
+
+    # Sources that are not modules: search engines, browsers, feed adapters.
+    for provider, state in sorted(inv.providers.items()):
+        if provider in rows:
+            continue
+        health = str(state.get("health", "unknown"))
+        rows[provider] = (_HEALTH_STATE.get(health, "not checked"),
+                          str(state.get("reason", "")))
+
+    # A routed need that nothing could answer names its own ladder.
+    for route in inv.routes:
+        if route.get("found"):
+            continue
+        need = str(route.get("need", "")).strip()
+        if not need or need in rows:
+            continue
+        rows[need] = ("unavailable", str(route.get("reason", "")))
+
+    return sorted(((name, state, detail) for name, (state, detail) in rows.items()),
+                  key=lambda r: (_STATE_ORDER.get(r[1], 99), r[0]))
+
+
+_STATE_COLOR = {
+    "found": "green", "not found": "dim", "not checked": "dim",
+    "requires key": "cyan", "paid": "magenta", "rate limited": "yellow",
+    "blocked": "red", "human action required": "yellow", "unavailable": "red",
+}
+
+_HEALTH_STATE = {
+    "ok": "found",
+    "unknown": "not checked",
+    "rate limited": "rate limited",
+    "blocked": "blocked",
+    "unavailable": "unavailable",
+    "needs key": "requires key",
+    "paid": "paid",
+    "disabled": "not checked",
+    "human action required": "human action required",
+}
+
+
+def _skip_state(reason: str) -> str:
+    """Turn "needs $VT_API_KEY" into `requires key` or, honestly, `paid`.
+
+    The distinction is the whole reason this exists: SecurityTrails and
+    VirusTotal are both skipped for want of a key, but one of them can be
+    fixed in two minutes for nothing and the other costs $500 a month. A
+    report that says "requires key" for both has told the reader to go and
+    waste an afternoon.
+    """
+    from .config import KEY_ENV
+    from .providers import Availability, availability_of_key
+
+    if "needs $" not in reason.lower():
+        return "not checked"
+    for name, env in KEY_ENV.items():
+        if env in reason or name in reason.lower():
+            return ("paid" if availability_of_key(name) is Availability.PAID
+                    else "requires key")
+    # An unrecognised key name is still a key requirement, not an absence.
+    return "requires key"
+
+
+def unavailable_sources(inv: Investigation) -> list[tuple[str, str, str]]:
+    """Just the rows a reader must not mistake for "nothing was there"."""
+    return [r for r in source_rows(inv) if r[1] not in ("found", "not found")]
 
 
 def _flatten(value: Any, limit: int = 12) -> str:
@@ -149,9 +265,19 @@ def render_console(inv: Investigation, *, verbose: bool = False,
             box=box.ROUNDED,
         )
     )
+    # The conclusion, in sentences, before any table. A reader handed eight
+    # ranked rows and forty log-odds has been given the working and left to do
+    # the last step themselves, and the last step is the one they came for.
+    from .analyst import render_text as analyst_text
+    from .analyst import write as analyst_write
+
+    note = analyst_write(inv)
+    console.print(Panel(analyst_text(note),
+                        title="[bold]◆ what I think[/bold]",
+                        border_style=art.NEBULA[4], box=box.ROUNDED))
+
     if inv.resolution is not None:
-        # Before the module output, always. The reader asked "which of these is
-        # them?" and every table below is working, not answer.
+        # Then the working, for a reader who wants to check it.
         from .identity import render_text as identity_text
 
         console.print(Panel(
@@ -211,6 +337,23 @@ def render_console(inv: Investigation, *, verbose: bool = False,
         console.print(
             Panel(st, title="[bold]instruments that did not report cleanly[/bold]",
                   border_style="yellow", box=box.ROUNDED)
+        )
+
+    gaps = unavailable_sources(inv)
+    if gaps:
+        at = Table(box=box.SIMPLE, show_header=True, header_style="bold magenta",
+                   expand=True)
+        at.add_column("source", width=18, no_wrap=True)
+        at.add_column("availability", width=22, no_wrap=True)
+        at.add_column("what that means", style="dim", overflow="fold")
+        for name, state, detail in gaps:
+            at.add_row(name, f"[{_STATE_COLOR.get(state, 'white')}]{state}[/]",
+                       detail or "-")
+        console.print(
+            Panel(at, title="[bold]sources not consulted[/bold]",
+                  subtitle="[dim]these are gaps in coverage, not absences of "
+                           "evidence[/dim]",
+                  border_style="magenta", box=box.ROUNDED)
         )
 
     links = connection_rows(inv)
@@ -278,6 +421,11 @@ def _render_plain(inv: Investigation, floor: int, order: dict, verbose: bool) ->
         out.append("\n[instrument status]")
         for name, status, reason in rows:
             out.append(f"  {name}: {status}{' - ' + reason if reason else ''}")
+    gaps = unavailable_sources(inv)
+    if gaps:
+        out.append("\n[sources not consulted]  gaps in coverage, not absences of evidence")
+        for name, state, detail in gaps:
+            out.append(f"  {name}: {state}{' - ' + detail if detail else ''}")
     links = connection_rows(inv)
     if links:
         out.append("\n[how the pieces connect]")
@@ -306,20 +454,32 @@ def render_csv(inv: Investigation) -> str:
     buf = io.StringIO()
     w = csv.writer(buf, lineterminator="\n")
     stamp = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(inv.started_at))
+    # `method` is appended rather than inserted so a spreadsheet or script
+    # built against the old column order keeps working.
     w.writerow(["target", "target_type", "module", "module_status", "severity",
-                "confidence", "label", "value", "source", "url", "timestamp"])
+                "confidence", "label", "value", "source", "url", "timestamp",
+                "method", "provider"])
     for res in inv.results:
         for f in res.findings:
+            acq = f.acquisition
             w.writerow([inv.target, inv.target_type.value, res.module, res.status.value,
                         f.severity.value, f.confidence.value, f.label,
-                        _flatten(f.value, 999), f.source, f.url or "", stamp])
+                        _flatten(f.value, 999), f.source, f.url or "", stamp,
+                        f.method, acq.provider if acq else ""])
     # Modules that never ran, or ran badly, get a row of their own: a CSV that
     # silently omits them reads as "we checked and there was nothing there".
     for name, status, reason in status_rows(inv):
         if any(r.module == name and r.findings for r in inv.results):
             continue
         w.writerow([inv.target, inv.target_type.value, name, status, Severity.INFO.value,
-                    "", "module status", reason, "nova", "", stamp])
+                    "", "module status", reason, "nova", "", stamp, "", ""])
+    # And the sources that were never consulted at all, for the same reason
+    # one rung up: a source needing a key is not a source that found nothing.
+    for name, state, detail in unavailable_sources(inv):
+        if any(r.module == name for r in inv.results):
+            continue
+        w.writerow([inv.target, inv.target_type.value, name, state, Severity.INFO.value,
+                    "", "source availability", detail, "nova", "", stamp, "", ""])
     return buf.getvalue()
 
 
@@ -401,6 +561,10 @@ def render_markdown(inv: Investigation) -> str:
         f"| Modules skipped | {s['skipped']} |",
         "",
     ]
+    from .analyst import render_markdown as analyst_md
+    from .analyst import write as analyst_write
+
+    out += ["## What I think", "", analyst_md(analyst_write(inv))]
     if inv.resolution is not None:
         from .identity import render_markdown as identity_md
 
@@ -419,6 +583,20 @@ def render_markdown(inv: Investigation) -> str:
             "|---|---|---|",
         ]
         out += [f"| {name} | {status} | {reason or '-'} |" for name, status, reason in rows]
+        out.append("")
+    gaps = unavailable_sources(inv)
+    if gaps:
+        out += [
+            "### Source availability",
+            "",
+            "Sources that were **not** consulted, and why. A source that "
+            "requires a key, costs money or rate limited us has told you "
+            "nothing - which is different from telling you there is nothing.",
+            "",
+            "| Source | Availability | Detail |",
+            "|---|---|---|",
+        ]
+        out += [f"| {name} | {state} | {detail or '-'} |" for name, state, detail in gaps]
         out.append("")
     links = connection_rows(inv)
     if links:
@@ -553,6 +731,18 @@ def render_html(inv: Investigation) -> str:
                 f"<td class='v'>{e(status)}</td><td class='s'>{e(reason or '-')}</td></tr>"
             )
         parts.append("</table></section>")
+    unavailable = unavailable_sources(inv)
+    if unavailable:
+        parts.append(
+            "<section><h2>Source availability<em>what was never consulted, and "
+            "why</em></h2><table>"
+        )
+        for name, state, detail in unavailable:
+            parts.append(
+                f"<tr class='notable'><td class='k'>{e(name)}</td>"
+                f"<td class='v'>{e(state)}</td><td class='s'>{e(detail or '-')}</td></tr>"
+            )
+        parts.append("</table></section>")
     for res in inv.results:
         if not res.findings and not res.errors:
             continue
@@ -621,7 +811,19 @@ RENDERERS = {
     #: The phone answer card. Useful from `nova scan` too, so a phone number
     #: inside a larger pipeline renders the same way `nova phone` shows it.
     "card": lambda inv: _card(inv),
+    #: The consolidated biographical dossier: one subject, every field carrying
+    #: its competing values and their sources. See core/target_dossier.py.
+    "dossier": lambda inv: _target_dossier("markdown", inv),
+    "dossier-json": lambda inv: _target_dossier("json", inv),
 }
+
+
+def _target_dossier(fmt: str, inv: Investigation) -> str:
+    """Render the unified dossier. Imported lazily to keep the import graph flat."""
+    from .target_dossier import generate_target_dossier, render_json, render_markdown
+
+    dossier = generate_target_dossier(inv)
+    return render_json(dossier) if fmt == "json" else render_markdown(dossier)
 
 
 def _card(inv: Investigation) -> str:

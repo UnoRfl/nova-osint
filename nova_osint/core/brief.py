@@ -404,6 +404,18 @@ def canonical(kind: ClaimKind, value: str) -> str:
             return canon
     if kind is ClaimKind.BORN:
         return _date(text)
+    if kind is ClaimKind.COUNTRY:
+        # "UK" and "United Kingdom of Great Britain and Ireland" share no whole
+        # word, so before this they compared as a *contradiction* and pushed
+        # the right candidate down. Resolving to one name first is a
+        # correctness fix, not tidiness.
+        from .vocab import country as canon_country
+
+        return (canon_country(text) or text).casefold()
+    if kind is ClaimKind.LANGUAGE:
+        from .vocab import language as canon_language
+
+        return (canon_language(text) or text).casefold()
     # Free text: case-folded, whitespace-collapsed. Not stripped of
     # punctuation - "St. Andrews" and "St Andrews" are compared loosely by the
     # resolver, which is the right place for fuzziness, not here.

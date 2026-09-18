@@ -197,6 +197,24 @@ Every finding carries a **source**, a **confidence** (`confirmed` / `likely` /
 interest, not vulnerability severity). `--min-severity notable` cuts the noise
 on a big scan. See [`examples/`](examples/) for a real report.
 
+### The dossier
+
+One subject, every field, with the working kept:
+
+```bash
+nova scan alice@example.com --expand --format dossier
+nova scan alice@example.com --expand --format dossier-json | jq .identity
+```
+
+Unlike the other formats this one consolidates rather than lists. Competing
+values from different sources are both kept and ranked by the weight of their
+source, conflicts get their own section, and nothing is chosen for you. The
+desktop app shows the same thing in its **Dossier** tab.
+
+Exposure records contribute only their non-credential metadata. Passwords,
+hashes, tokens, cookies and keys are never read, never stored and never
+printed; a record that contained them says so instead.
+
 ## Following the connections
 
 A scan answers "what is true about this target". `--expand` answers the harder
