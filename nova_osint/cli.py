@@ -158,6 +158,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     _investigation_parsers(sub, _common, _search_flags)
 
+    from .calibration_cli import add_parsers as _calibration_parsers
+
+    _calibration_parsers(sub, _common)
+
     mods = sub.add_parser("modules", help="list available modules")
     mods.add_argument("-t", "--type", choices=[t.value for t in TargetType],
                       help="only modules that accept this target type")
@@ -770,6 +774,11 @@ def main(argv: list[str] | None = None) -> int:
 
         _, cfg = load_config(args)
         return cmd_assist(args, cfg)
+    if args.command == "calibrate":
+        from .calibration_cli import cmd_calibrate
+
+        _, cfg = load_config(args)
+        return cmd_calibrate(args, cfg, _open_store)
     if args.command == "image":
         from .investigation_cli import cmd_image
 

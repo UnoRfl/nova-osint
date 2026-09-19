@@ -382,6 +382,56 @@ Providers: Ollama (`/api/chat`) and anything OpenAI-compatible
 `playwright`. `nova assist status` says which, and `nova assist test` proves the
 round trip.
 
+### `core/calibration.py` — measuring the evidence table instead of asserting it
+
+`EVIDENCE` says a shared tracker id is worth 5.0 nats and a matching handle
+0.4, and `graph.py`'s own docstring admits those are "judgements, not
+measurements". Every number downstream inherits that — the Admiralty grade, the
+frontier ordering, the word *probable* in the report. A tool that publishes
+probabilities it has never scored is asserting calibration, which is the one
+thing this project exists not to do.
+
+`nova calibrate` closes the loop. Given links somebody adjudicated it reports
+the **Brier score** and the skill against guessing the base rate, **reliability
+bin by bin** (of the links called 90% likely, how many were real), **AUC** — kept
+separate on purpose, because a tool can be perfectly calibrated and useless, or
+sharply discriminating and badly scaled, and only the second is fixable by
+editing a table — and **a suggested weight per evidence kind**.
+
+The fit is a logistic regression with one feature per kind and **no intercept**,
+which is not a modelling choice so much as an identity: the graph already
+assumes log-odds add across independent evidence, and that assumption *is* the
+logistic model, so the fitted coefficients are the table's own units. The
+harness measures the real `Edge` — independence discount, temporal decay, hub
+demotion and all — rather than a copy of it. No intercept because a free one
+would let a lopsided corpus's base rate leak into every kind.
+
+Two deliberate conservatisms, and one thing it never does:
+
+- **It regularises toward the current table**, not toward zero. Forty cases
+  should nudge a number the authors reasoned about, not overturn it.
+- **It refuses to recommend on thin evidence** — fewer than `MIN_CASES`, or
+  perfect separation, gets no suggestion and says why.
+- **It never writes `EVIDENCE`.** It prints a diff.
+
+`nova calibrate selftest` measures the measuring instrument: cases generated
+*from* the table must read as calibrated, and cases generated from a table
+inflated 2.2× must read as over-confident. A harness with a sign error, a
+double-counted discount or a broken hub divisor fails it.
+
+> Recorded because it was hit: the ridge term's own gradient is
+> `lam * (coef - prior)`, so a fixed step size diverges once `rate * lam`
+> nears 2 — which a strong prior on a small corpus reaches easily, and which
+> produced NaN weights instead of the conservative answer the prior existed to
+> give. The step is scaled by the curvature, and a diverged fit returns the
+> table unchanged rather than printing garbage as a measurement.
+
+> And: an all-true corpus makes the base-rate baseline perfect by construction,
+> so skill reads `+0.000` — which the first version rendered as "WORSE THAN
+> GUESSING". It is not; there is nothing to be better than. `Report.one_sided`
+> says so instead, and tells the adjudicator to record some links that went the
+> other way.
+
 ### `core/store.py` — what was found, and proof of it
 
 SQLite for cases, entities, edges, observations, findings, per-module status and

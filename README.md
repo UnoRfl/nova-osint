@@ -95,7 +95,39 @@ nova assist status
 ```
 
 Without a model, the `assist` stage is a named coverage gap like any other and
-everything else runs unchanged.
+everything else runs unchanged. To add one:
+
+```bash
+winget install Ollama.Ollama && ollama pull llama3.2:3b && nova assist test
+```
+
+### Scoring the scores
+
+Every confidence NOVA prints comes from one table of weights in `graph.py`, and
+that table was reasoned about rather than measured. `nova calibrate` measures
+it, against links whose truth you established yourself:
+
+```bash
+nova calibrate export 20260919-101459-693b07 -o corpus.jsonl
+```
+
+Set `"label": true` or `false` on the rows you can vouch for, say how you know
+in `"basis"`, then:
+
+```bash
+nova calibrate report corpus.jsonl
+```
+
+You get a Brier score and the skill against guessing, a reliability table — *of
+the links NOVA called 90% likely, how many were real* — an AUC, and a suggested
+weight per evidence kind. It never edits the table; it prints a diff. It
+refuses to suggest anything for a kind it has seen fewer than twelve times,
+because a table retuned on one afternoon's cases would be worse than the
+judgements it replaced while carrying the authority of a measurement.
+
+`nova calibrate selftest` checks the instrument itself: cases generated from
+the table must read as calibrated, and cases from an inflated one must read as
+over-confident.
 
 ## Install
 
