@@ -61,11 +61,26 @@ BRIEF_KINDS = [
 ]
 
 #: What the typed target amounts to as a claim.
-_BRIEF_KIND_FOR_TYPE = {
-    TargetType.DOMAIN: "domain", TargetType.EMAIL: "email",
-    TargetType.USERNAME: "handle", TargetType.PERSON: "name",
-    TargetType.PHONE: "phone", TargetType.URL: "url", TargetType.IP: "ip",
-}
+def _brief_kinds_for_types() -> dict[TargetType, str]:
+    """Which claim kind describes a target of each type.
+
+    Derived by inverting ``brief.SEEDABLE`` rather than written out again.
+    The hand-written version had ``USERNAME: "handle"`` and there is no
+    ``handle`` claim kind - it is ``username`` - so assembling the brief threw
+    ``ValueError`` for every handle typed into the box. That happens inside a
+    Tk callback in ``start_scan``, before the worker thread is created, and
+    ``pythonw`` has nowhere to print a traceback: the window simply sat at
+    "0% · starting …" with no instruments running and no error, forever.
+
+    Inverting the real table means the two cannot drift again, and a claim
+    kind added to ``brief.py`` is picked up here for free.
+    """
+    from ..core.brief import SEEDABLE
+
+    return {ttype: kind.value for kind, ttype in SEEDABLE.items()}
+
+
+_BRIEF_KIND_FOR_TYPE = _brief_kinds_for_types()
 
 TYPE_COLOUR = {
     TargetType.DOMAIN: theme.ORCHID,
@@ -874,12 +889,25 @@ class ConsoleScreen(ttk.Frame):
         cfg.set_option("verify_hits", self.verify.get())
         cfg.set_option("include_nsfw", self.nsfw.get())
         cfg.set_option("refresh_sites", False)
+        # The same bound the CLI applies. Without it the 481-site sweep, with
+        # its verification pass and per-host rate limiting, can hold the bar
+        # at 90% for minutes with one instrument still lit - which reads as a
+        # hang even though it is working.
+        cfg.set_option("module_time_limit", 180.0)
 
         # More than the target itself means there is something to cross-check,
         # and only the expanding walk can do it: it is the one path that puts
         # every seed into a single graph where the evidence can converge.
-        brief = self._current_brief()
-        brief = brief if len(brief) > 1 else None
+        # Assembling the brief must never be able to stop a scan. It is an
+        # enrichment: the target in the box is what the operator asked for,
+        # and a bad extra fact should cost the cross-check, not the run.
+        try:
+            brief = self._current_brief()
+            brief = brief if len(brief) > 1 else None
+        except Exception as exc:  # noqa: BLE001 - see report_error
+            self.report_error(f"ignoring the 'also know' facts: "
+                              f"{type(exc).__name__}: {exc}")
+            brief = None
         if brief is not None:
             self._log_raw(f"  cross-checking against {len(brief)} known "
                           f"fact(s)\n\n", ("plain",))
@@ -962,6 +990,19 @@ class ConsoleScreen(ttk.Frame):
         except queue.Empty:
             pass
         self.after(90, self._drain)
+
+    def report_error(self, message: str) -> None:
+        """Put an error where the operator is already looking.
+
+        Called by the window's ``report_callback_exception`` hook and by any
+        handler that catches something it can carry on from. The live log is
+        the right place: under ``pythonw`` there is no console, and a scan
+        that quietly never started is worse than one that says why.
+        """
+        try:
+            self._log_event("nova", "fail", message)
+        except Exception:  # noqa: BLE001 - never recurse out of an error path
+            pass
 
     def _module_tag(self, module: str) -> str:
         tag = f"mod:{module}"

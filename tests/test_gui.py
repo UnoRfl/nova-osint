@@ -677,3 +677,53 @@ def test_every_target_type_has_a_chip_colour(console, themed) -> None:
         }[ttype])
         themed.update_idletasks()
         assert console.chip.cget("text")
+
+
+def test_every_target_type_maps_to_a_real_claim_kind() -> None:
+    """`USERNAME: "handle"` was in this table and there is no `handle` claim
+    kind. Assembling the brief therefore raised ValueError for every handle
+    typed into the box - inside a Tk callback, before the worker thread was
+    created, with pythonw swallowing the traceback. The window sat at
+    "0% · starting …" with no instruments running and no error, forever."""
+    from nova_osint.core.brief import ClaimKind
+    from nova_osint.gui.console import _BRIEF_KIND_FOR_TYPE
+
+    valid = {k.value for k in ClaimKind}
+    for ttype, kind in _BRIEF_KIND_FOR_TYPE.items():
+        assert kind in valid, f"{ttype.value} maps to {kind!r}, not a claim kind"
+
+
+def test_a_brief_can_be_built_for_every_target_type(console, themed) -> None:
+    """The end-to-end version of the above: whatever the operator types, the
+    brief assembles rather than throwing."""
+    for value in ("unorf1", "ada@example.org", "example.com", "Ada Lovelace",
+                  "8.8.8.8", "https://example.com", "+442079460958"):
+        console.entry.delete(0, "end")
+        console.entry.insert(0, value)
+        themed.update_idletasks()
+        brief = console._current_brief()
+        assert brief is not None, f"no brief for {value!r}"
+
+
+def test_a_bad_extra_fact_does_not_stop_the_scan(console, themed, monkeypatch) -> None:
+    """The brief is an enrichment. A bad fact should cost the cross-check,
+    not the run."""
+    def explode():
+        raise ValueError("nope")
+
+    monkeypatch.setattr(console, "_current_brief", explode)
+    monkeypatch.setattr(console, "_run", lambda *a, **k: None)
+    console.entry.delete(0, "end")
+    console.entry.insert(0, "unorf1")
+    themed.update_idletasks()
+    console.start_scan()
+    themed.update_idletasks()
+    assert console.scanning, "the scan must still have started"
+
+
+def test_the_console_can_report_an_error_into_its_own_log(console, themed) -> None:
+    """pythonw has no stderr, so the window's exception hook needs somewhere
+    to put things. This is it."""
+    console.report_error("ValueError: something went wrong")
+    themed.update_idletasks()
+    assert "something went wrong" in console.logbox.get("1.0", "end")

@@ -6,9 +6,12 @@ import sys
 import tkinter as tk
 from tkinter import ttk
 
+from ..core.logging_config import get_logger
 from . import theme
 from .boot import BootScreen
 from .console import ConsoleScreen
+
+log = get_logger("gui")
 
 TITLE = "NOVA — open source intel"
 
@@ -29,6 +32,41 @@ class NovaApp(tk.Tk):
         self.screen: ttk.Frame | None = None
         self._show(BootScreen(self.container, on_ready=self._enter_console))
         self.protocol("WM_DELETE_WINDOW", self._close)
+
+    def report_callback_exception(self, exc, value, tb) -> None:  # noqa: N802
+        """Tk's own hook for an exception inside a callback.
+
+        The default prints to stderr, and the desktop app is launched with
+        ``pythonw``, which has no stderr. So a bug in a button handler left the
+        window sitting there with no error and no clue: one wrong mapping made
+        every username scan raise inside ``start_scan`` before the worker
+        thread was created, and the display stayed at "0% · starting …"
+        indefinitely. Nothing was broken on screen, so nothing looked broken.
+
+        Now it goes to the log file and, when the console is up, into the live
+        log where the operator is already looking.
+        """
+        import traceback
+
+        text = "".join(traceback.format_exception(exc, value, tb))
+        log.error("unhandled GUI error:\n%s", text)
+        screen = self.screen
+        reporter = getattr(screen, "report_error", None)
+        if callable(reporter):
+            try:
+                reporter(f"{exc.__name__}: {value}")
+                return
+            except Exception:  # noqa: BLE001 - the reporter must never recurse
+                pass
+        try:
+            from tkinter import messagebox
+
+            messagebox.showerror(
+                "NOVA hit an error",
+                f"{exc.__name__}: {value}\n\n"
+                f"The details are in the log file.")
+        except Exception:  # noqa: BLE001 - no window to show it in
+            pass
 
     def _centre(self, w: int, h: int) -> None:
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
