@@ -96,6 +96,14 @@ TYPE_COLOUR = {
     TargetType.UNKNOWN: theme.INK_FAINT,
 }
 
+#: How a social account's ``basis`` is drawn. Four values, not three - see
+#: :class:`~nova_osint.core.socials.SocialAccount`. Both are read with ``.get``
+#: for the same reason ``TYPE_COLOUR`` is: a lookup table in a renderer that
+#: can raise is a lookup table that will one day throw away a finished scan.
+SOCIAL_MARK = {"confirmed": "+", "declared": "~", "possible": "*", "search": "?"}
+SOCIAL_TAG = {"confirmed": "ok", "declared": "notable", "possible": "plain",
+              "search": "dim"}
+
 
 class ConsoleScreen(ttk.Frame):
     def __init__(self, master, boot: dict) -> None:
@@ -1072,12 +1080,33 @@ class ConsoleScreen(ttk.Frame):
             self.empty.configure(text="no findings\n\nnothing public turned up "
                                       "for this target")
             self.empty.place(relx=0.5, rely=0.45, anchor="center")
-        self._render_profile(inv)
-        self._render_dossier(inv)
-        self._render_identity(inv)
-        for b in self.export_btns:
-            b.configure(state="normal")
-        self._reset()
+        # Each panel behind its own boundary, and the reset in a ``finally``.
+        #
+        # The engine has had this rule since the beginning - "a module that
+        # raises must not take the other fifteen with it" - and the renderers
+        # never got it. A `KeyError` in the social-accounts panel threw away a
+        # scan that had already finished: 527 findings collected over 313
+        # seconds, and the window sat on "SCANNING" for ever with the export
+        # buttons greyed out, because `_reset()` was three lines further down.
+        #
+        # A panel that cannot draw is a panel that says so. It is never a
+        # reason to lose the findings or to lie about whether the scan ended.
+        try:
+            for label, render in (("Profile", self._render_profile),
+                                  ("Dossier", self._render_dossier),
+                                  ("Identity", self._render_identity)):
+                try:
+                    render(inv)
+                except Exception as exc:  # noqa: BLE001 - drawing, not finding
+                    self._log_event("render", "fail",
+                                    f"the {label} tab could not be drawn "
+                                    f"({type(exc).__name__}: {exc}); the "
+                                    f"findings are unaffected and the exports "
+                                    f"still work")
+        finally:
+            for b in self.export_btns:
+                b.configure(state="normal")
+            self._reset()
 
     # ---------------------------------------------------------------- identity
 
@@ -1123,10 +1152,10 @@ class ConsoleScreen(ttk.Frame):
                         continue
                     found = f" -> {check.found}" if check.found else ""
                     rows.append(
-                        (f"       {mark_for[check.verdict]} "
+                        (f"       {mark_for.get(check.verdict, '  ')} "
                          f"{check.claim.kind.value:9} {check.claim.raw}{found}"
                          f"   [{check.llr:+.1f}] {check.why}\n",
-                         tag_for[check.verdict]))
+                         tag_for.get(check.verdict, "plain")))
         if res.next_check:
             rows.append((f"\n  what would settle it:\n    {res.next_check}\n",
                          "warnrow"))
@@ -1218,9 +1247,15 @@ class ConsoleScreen(ttk.Frame):
         if profile.socials:
             width = max(len(a.platform) for a in profile.socials)
             for a in profile.socials:
-                mark = {"confirmed": "+", "declared": "~", "search": "?"}[a.basis]
-                tag = {"confirmed": "ok", "declared": "notable",
-                       "search": "dim"}[a.basis]
+                # Four basis values, not three. ``possible`` - a name matched
+                # but nothing confirmed who owns the account - was missing
+                # here, and being read with ``[]`` rather than ``.get`` it
+                # raised KeyError on the *render*, after a 313-second scan had
+                # already finished. The findings were all there; the window
+                # just never came back. Read defensively and the worst a new
+                # basis can do is look plain.
+                mark = SOCIAL_MARK.get(a.basis, "*")
+                tag = SOCIAL_TAG.get(a.basis, "plain")
                 handle = f"@{a.handle}" if a.handle != "-" else ""
                 rows.append((f"    {mark}  {a.platform.ljust(width)}  ", tag))
                 rows.append((f"{handle:<22} ", "plain"))
@@ -1229,6 +1264,7 @@ class ConsoleScreen(ttk.Frame):
                 if a.note:
                     rows.append((f"       {' ' * width}  {a.note}\n", "dim"))
             rows.append(("\n    + verified by a lookup   ~ declared by a source   "
+                         "* name matched, owner unconfirmed   "
                          "? not checkable, open by hand\n", "dim"))
         else:
             rows.append(("    (none found)\n", "dim"))

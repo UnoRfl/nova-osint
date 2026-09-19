@@ -727,3 +727,94 @@ def test_the_console_can_report_an_error_into_its_own_log(console, themed) -> No
     console.report_error("ValueError: something went wrong")
     themed.update_idletasks()
     assert "something went wrong" in console.logbox.get("1.0", "end")
+
+
+# ------------------------------------------------------- a panel that cannot draw
+
+
+def _possible_account_investigation():
+    """A scan whose social panel holds a ``possible`` account.
+
+    Four basis values exist; the panel's lookup tables listed three. This is
+    the shape of scan that hit it - a username sweep finding a handle nobody
+    confirmed the ownership of, which is the *normal* result for a common
+    handle rather than an exotic one.
+    """
+    from nova_osint.core.models import Confidence
+
+    inv = Investigation(target="unorfl", target_type=TargetType.USERNAME)
+    res = ScanResult(module="username", target="unorfl",
+                     target_type=TargetType.USERNAME)
+    res.add("Instagram", "https://instagram.com/unorfl", source="username",
+            url="https://instagram.com/unorfl", severity=Severity.NOTABLE,
+            confidence=Confidence.POSSIBLE)
+    inv.results.append(res)
+    return inv.finish()
+
+
+def test_every_basis_a_social_account_can_carry_has_a_mark(console) -> None:
+    """The panel's tables must cover the type, not most of it.
+
+    `KeyError: 'possible'` landed *after* a 313-second scan had finished, on
+    the render. Every finding was already collected and the window never came
+    back.
+    """
+    from nova_osint.gui.console import SOCIAL_MARK, SOCIAL_TAG
+
+    for basis in ("confirmed", "declared", "possible", "search"):
+        assert basis in SOCIAL_MARK, basis
+        assert basis in SOCIAL_TAG, basis
+
+
+def test_a_basis_nobody_has_invented_yet_still_draws(console) -> None:
+    """Read with .get, so the worst a new value can do is look plain."""
+    from nova_osint.gui.console import SOCIAL_MARK, SOCIAL_TAG
+
+    assert SOCIAL_MARK.get("something-new", "*") == "*"
+    assert SOCIAL_TAG.get("something-new", "plain") == "plain"
+
+
+def test_a_scan_with_an_unconfirmed_account_finishes_and_resets(console) -> None:
+    console._finish(_possible_account_investigation())
+    assert not console.scanning
+    assert str(console.scan_btn["text"]).strip().endswith("SCAN")
+
+
+def test_a_panel_that_raises_does_not_strand_the_scan_button(console) -> None:
+    """The engine's rule, applied to the renderers.
+
+    A module that raises must not take the other fifteen with it; a *panel*
+    that raises must not take the findings, the exports, or the operator's
+    ability to start another scan.
+    """
+    def explode(_inv):
+        raise KeyError("possible")
+
+    console._render_profile = explode
+    console._finish(_social_investigation())
+
+    assert not console.scanning, "the button was left saying SCANNING"
+    assert str(console.scan_btn["text"]).strip().endswith("SCAN")
+    assert all(str(b["state"]) == "normal" for b in console.export_btns), \
+        "the findings were collected; the exports must still work"
+    assert "Profile tab could not be drawn" in console.logbox.get("1.0", "end")
+
+
+def test_the_other_panels_still_draw_when_one_fails(console) -> None:
+    def explode(_inv):
+        raise RuntimeError("nope")
+
+    console._render_profile = explode
+    console._finish(_social_investigation())
+    assert "ACCOUNTS" in console.dossierbox.get("1.0", "end")
+
+
+def test_the_identity_panel_covers_every_verdict(console) -> None:
+    """Same class of bug, one tab over. Checked rather than assumed."""
+    from nova_osint.core.identity import Verdict
+    from nova_osint.gui.console import ConsoleScreen  # noqa: F401
+    import inspect
+
+    src = inspect.getsource(ConsoleScreen._render_identity)
+    for verdict in Verdict:
+        assert f"Verdict.{verdict.name}" in src, verdict.name
