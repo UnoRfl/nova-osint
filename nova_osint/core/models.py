@@ -334,6 +334,12 @@ class Investigation:
     #: The record of which rung of the free-first ladder answered, and what
     #: happened on the ones above it.
     routes: list[dict[str, Any]] = field(default_factory=list)
+    #: ``[(lead, why it was not worth a lookup)]``. Leads the engine declined
+    #: to follow because of what *kind* of thing they are - a noreply alias, a
+    #: CI robot's commit address - as opposed to how weakly evidenced they are,
+    #: which ``Expansion.below_floor`` covers. Named rather than dropped: a
+    #: reader who cannot see the decision cannot tell it from never looking.
+    not_followed: list[tuple[str, str]] = field(default_factory=list)
     #: An ``assist.AssistOutcome`` as a plain dict, when a local model was
     #: enabled. Carried here rather than only on the console report so the
     #: machine-readable output shows the suggestions *and* what the citation
@@ -422,4 +428,7 @@ class Investigation:
             out["routes"] = self.routes
         if self.assist:
             out["assist"] = self.assist
+        if self.not_followed:
+            out["not_followed"] = [{"lead": lead, "reason": why}
+                                   for lead, why in self.not_followed]
         return out

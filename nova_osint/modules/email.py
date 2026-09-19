@@ -14,6 +14,7 @@ import urllib.parse
 from pathlib import Path
 
 from ..core import dns as dnsmod
+from ..core.addresses import ROLE_LOCALPARTS, judge_address
 from ..core.entities import EntityType
 from ..core.models import Confidence, ScanResult, Severity, TargetType
 from ..core.registry import Module, register
@@ -24,12 +25,10 @@ DISPOSABLE_REMOTE = (
     "disposable-email-domains/master/disposable_email_blocklist.conf"
 )
 
-ROLE_ACCOUNTS = {
-    "admin", "administrator", "abuse", "billing", "contact", "hello", "help",
-    "info", "mail", "marketing", "noreply", "no-reply", "office", "postmaster",
-    "privacy", "root", "sales", "security", "support", "team", "webmaster",
-    "careers", "jobs", "hr", "legal", "press", "donotreply",
-}
+#: Kept as a name for anything importing it, but the list itself now lives in
+#: :mod:`nova_osint.core.addresses` - the expansion gate has to make the same
+#: call this module reports, and two lists drift.
+ROLE_ACCOUNTS = ROLE_LOCALPARTS
 
 FREEMAIL = {
     "gmail.com", "googlemail.com", "yahoo.com", "outlook.com", "hotmail.com",
@@ -68,9 +67,22 @@ class EmailModule(Module):
             result.add("gmail dot-folding", f"equivalent to {canonical.replace('.', '')}@gmail.com",
                        source="parse", severity=Severity.NOTABLE)
 
-        if canonical in ROLE_ACCOUNTS:
+        # One source of truth with the expansion gate. This module used to keep
+        # its own ROLE_ACCOUNTS list and report the fact *after* a pivot had
+        # already spent seven modules on the address; the judge is consulted
+        # before the pivot now, and reporting from the same verdict means the
+        # two can never disagree about what a mailbox is.
+        verdict = judge_address(f"{canonical}@{domain}")
+        if verdict.kind == "automated":
+            result.add("account type",
+                       f"automated mailbox - {verdict.reason}",
+                       source="analysis", confidence=Confidence.LIKELY,
+                       extra={"note": "nobody reads this address; it is not a "
+                                      "lead and was not followed"})
+        elif verdict.kind == "role":
             result.add("account type", "role account (shared mailbox, not a person)",
-                       source="analysis", confidence=Confidence.LIKELY)
+                       source="analysis", confidence=Confidence.LIKELY,
+                       extra={"note": verdict.reason})
         else:
             result.add("account type",
                        "freemail / personal" if domain in FREEMAIL else "custom domain",

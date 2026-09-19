@@ -382,6 +382,55 @@ Providers: Ollama (`/api/chat`) and anything OpenAI-compatible
 `playwright`. `nova assist status` says which, and `nova assist test` proves the
 round trip.
 
+### `core/addresses.py` — a person's mailbox, or a machine's
+
+The email counterpart to `infra.py`, and it exists for the same reason: the
+most expensive mistake an expansion makes is spending a budget on something
+that was never going to identify anybody. From a real run's live log:
+
+```
+60.4s   pivot:improvised30@gmail.com
+121.2s  pivot:unorfl@users.noreply.github.com
+172.0s  pivot:action@github.com
+243.2s  pivot:sales@designsbyracquel.com
+```
+
+Four email pivots, seven modules each, ~60s apiece — about 250 of that scan's
+313 seconds — and two of the four could not have worked.
+`unorfl@users.noreply.github.com` is an alias GitHub *invents* so a commit need
+not carry a real address: it is the subject's, and exactly one system on earth
+has heard of it. `action@github.com` is not the subject at all — it is GitHub
+Actions signing its own commits, and following it walks the investigation into
+GitHub's infrastructure, the email analogue of pivoting into a cloud netblock.
+
+But `sales@designsbyracquel.com` is a role address, and for a one-person
+business the role address genuinely *is* the owner. So `judge_address` is a
+judgement with three outcomes, not a blocklist with two:
+
+| | expandable | identifies a person |
+|---|---|---|
+| `personal` | yes | yes |
+| `role` — `sales@`, `info@`, `admin@` | yes, it reaches the org | **no** |
+| `automated` — noreply, CI bots, platform aliases | **no** | no |
+
+`identifies_a_person` is the half that matters for correctness rather than
+speed: `sales@` appearing on two sites says they share a mailbox, not that they
+share an owner, and an investigation that cannot tell those apart will merge a
+shop and its web designer.
+
+`engine.pivot_refusal()` is the single gate, consulted by **both** expansion
+paths — the frontier walk `nova investigate` uses and the flat `follow_pivots`
+behind the desktop app's "Follow pivots" checkbox. A rule enforced in one of
+two is a rule that holds until somebody clicks the other one. The filter runs
+*before* the limit, or two robots at the front of the queue eat two of the five
+slots. Refusals land in `Investigation.not_followed`, named rather than
+dropped, and kept distinct from `Expansion.below_floor`: "this kind of thing is
+not a lead" and "nobody said much either way" are different statements.
+
+> `modules/email.py` reported role accounts already — *after* a pivot had spent
+> seven modules on the address. It now reads the same verdict, and its old
+> private `ROLE_ACCOUNTS` list is an alias, because two lists drift.
+
 ### `core/calibration.py` — measuring the evidence table instead of asserting it
 
 `EVIDENCE` says a shared tracker id is worth 5.0 nats and a matching handle

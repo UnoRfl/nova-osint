@@ -45,6 +45,7 @@ from .http import AccessStatus, Fetcher, Response
 from .logging_config import get_logger
 from .models import Investigation, ModuleStatus, ScanResult, TargetType
 from .normalizer import DataNormalizer
+from .addresses import judge_address
 from .opsec import PassiveGuard, PassiveViolation
 from .registry import Module, detect_type, select, shape_problem
 
@@ -205,6 +206,21 @@ def work_key(ent: Entity) -> str:
     if ent.etype in (EntityType.HOST, EntityType.DOMAIN):
         return f"site:{ent.value.casefold()}"
     return ent.eid
+
+
+def pivot_refusal(target: str, ttype: TargetType) -> str:
+    """Why this lead is not worth a lookup, or ``""`` if it is.
+
+    One place, consulted by both expansion paths - the frontier walk that
+    ``nova investigate`` uses and the flat ``follow_pivots`` the desktop app's
+    "Follow pivots" checkbox runs. A rule enforced in one of the two is a rule
+    that holds until somebody clicks the other one.
+    """
+    if ttype is TargetType.EMAIL:
+        verdict = judge_address(target)
+        if not verdict.expandable:
+            return verdict.reason
+    return ""
 
 
 def entity_for(target: str, ttype: TargetType) -> Entity | None:
@@ -740,6 +756,14 @@ class Engine:
         ttype = TO_TARGET_TYPE.get(ent.etype)
         if ttype is None:
             return []
+        # Same gate as follow_pivots, so the rule does not depend on which
+        # path the operator took to get here.
+        skip = pivot_refusal(ent.value, ttype)
+        if skip:
+            log.info("not expanding %s: %s", ent.eid, skip)
+            if not any(e == ent.eid for e, _ in inv.not_followed):
+                inv.not_followed.append((ent.eid, skip))
+            return []
         _, modules, skipped = self.plan(ent.value, only, exclude, ttype)
         key = work_key(ent)
         modules = [m for m in modules if (m.name, key) not in done]
@@ -764,11 +788,29 @@ class Engine:
         limit: int = 5,
         types: set[TargetType] | None = None,
     ) -> list[Investigation]:
-        """Scan the most interesting discovered targets, one level deep."""
+        """Scan the most interesting discovered targets, one level deep.
+
+        The filter runs *before* the limit, not after. Otherwise two robots at
+        the front of the queue consume two of the five slots and the real leads
+        behind them are never reached - which is precisely what happened on the
+        run this was written for: of four email pivots costing about sixty
+        seconds each, ``unorfl@users.noreply.github.com`` is an alias only
+        GitHub has heard of and ``action@github.com`` is GitHub Actions signing
+        its own commits.
+        """
         types = types or {TargetType.IP, TargetType.EMAIL, TargetType.USERNAME}
-        queue = [p for p in inv.pivots if p.target_type in types][:limit]
+        wanted = [p for p in inv.pivots if p.target_type in types]
+        queue: list[Any] = []
+        for p in wanted:
+            skip = pivot_refusal(p.target, p.target_type)
+            if skip:
+                log.info("not following %s: %s", p.target, skip)
+                inv.not_followed.append((p.target, skip))
+                continue
+            queue.append(p)
+
         out = []
-        for p in queue:
+        for p in queue[:limit]:
             log.info("following pivot %s (%s)", p.target, p.target_type.value)
             self.progress(f"pivot:{p.target}", "start")
             out.append(self.scan(p.target, target_type=p.target_type))
