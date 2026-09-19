@@ -208,6 +208,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
     #: A new module can add one without touching this file's schema.
     "module_options": {
         "securitytrails_depth": "basic",
+        #: The optional local model. Off unless asked for, on your own machine
+        #: unless explicitly allowed elsewhere, and free either way - see
+        #: ``nova assist status``.
+        "assist": False,
+        "assist_provider": "ollama",
+        "assist_url": "http://127.0.0.1:11434",
+        "assist_model": "llama3.2:3b",
+        "assist_allow_remote": False,
     },
 }
 

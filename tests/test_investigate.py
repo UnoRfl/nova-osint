@@ -293,9 +293,24 @@ def test_an_investigation_runs_every_stage_and_says_how_each_went(stub_engine) -
     report = investigate("Ada Lovelace", Cfg(), budget=Budget.quick())
     names = [s.name for s in report.stages]
     assert names == ["plan", "images", "search", "sources", "expansion",
-                     "follow-up", "correlation", "identity"]
+                     "follow-up", "assist", "correlation", "identity"]
     assert all(s.state != "pending" for s in report.stages), \
         "a stage left pending tells the reader nothing about what happened"
+
+
+def test_the_optional_model_is_a_named_gap_when_it_is_not_enabled(
+        stub_engine) -> None:
+    """Off by default, and saying so - not silently absent.
+
+    The assist stage is the one layer whose failure must never be visible as
+    anything but a coverage gap, so the default path through it is also the
+    one an operator sees most often and it has to read correctly.
+    """
+    report = investigate("Ada Lovelace", Cfg())
+    stage = next(s for s in report.stages if s.name == "assist")
+    assert stage.state == "unavailable"
+    assert stage.reason
+    assert report.assist is not None and not report.assist.available
 
 
 def test_a_stage_that_could_not_run_says_so_rather_than_showing_nothing(

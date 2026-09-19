@@ -765,6 +765,11 @@ def main(argv: list[str] | None = None) -> int:
 
         _, cfg = load_config(args)
         return cmd_browser(args, cfg)
+    if args.command == "assist":
+        from .investigation_cli import cmd_assist
+
+        _, cfg = load_config(args)
+        return cmd_assist(args, cfg)
     if args.command == "image":
         from .investigation_cli import cmd_image
 

@@ -343,6 +343,45 @@ on every node, `frontier` skips the losers, and `Expansion.ruled_out` names them
 with the objection — kept apart from `below_floor`, because "we checked and it
 is not him" and "nobody said much either way" are different results.
 
+### `core/assist.py` — the optional local model, and the fence around it
+
+Off by default. Free, local, and governed by one rule:
+
+> **It produces questions and hypotheses. It never produces findings.**
+
+Nothing it says reaches the evidence graph — not as a weak edge, not as a
+`pivot-derived` node, not as a low-confidence finding. The graph is for things
+a source said, and a model has no sources. What it is good at is the thing the
+query planner does badly: looking at forty entities and a half-finished picture
+and noticing what nobody has asked.
+
+Three guards, because "never produces findings" has to be enforced rather than
+promised:
+
+**A hypothesis must cite evidence that exists.** Every hypothesis names the
+entity ids it rests on, and any id the graph has never heard of discards the
+whole hypothesis — a model that invents a connection almost always invents the
+node it hangs off. The count of what was thrown away is reported, in the
+console *and* in the JSON, because a consumer shown the questions but not the
+discards has been told the flattering half.
+
+**A question is a question.** Surviving questions go through the same
+`SearchService` as every other query, as `Category.GENERAL` via
+`QueryPlanner.free_text` — the weakest category there is. A suggestion that
+turns out to be right is evidenced by the page that confirmed it, never by
+having been suggested. Operators in the text are detected rather than trusted,
+so an engine without `site:` gets the degraded form.
+
+**It runs on your machine or it does not run.** Loopback and RFC1918 pass; a
+public endpoint is refused before a socket opens, and the refusal says that
+enabling it discloses the investigation and may cost money.
+
+Providers: Ollama (`/api/chat`) and anything OpenAI-compatible
+(`/v1/chat/completions`) — llama.cpp's server, LM Studio, vLLM. Absent one, the
+`assist` stage is a named coverage gap like any other, exactly as it is without
+`playwright`. `nova assist status` says which, and `nova assist test` proves the
+round trip.
+
 ### `core/store.py` — what was found, and proof of it
 
 SQLite for cases, entities, edges, observations, findings, per-module status and

@@ -110,6 +110,10 @@ class InvestigationReport:
     stopped_by: str = ""
     #: ``imageint.ImageFacts`` for anything the operator handed in.
     images: list[Any] = field(default_factory=list)
+    #: ``assist.AssistOutcome``: questions and hypotheses from a local model,
+    #: when one was enabled and reachable. Never findings - see
+    #: :mod:`~nova_osint.core.assist` for why that boundary is absolute.
+    assist: Any = None
 
     def tree(self) -> str:
         """The live tree, as text. The same shape the GUI renders."""
@@ -122,12 +126,15 @@ class InvestigationReport:
         return "\n".join(lines)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "plan": self.plan.to_dict(),
             "stages": [s.to_dict() for s in self.stages],
             "queries_run": self.queries_run, "rounds": self.rounds,
             "stopped_by": self.stopped_by,
         }
+        if self.assist is not None:
+            out["assist"] = self.assist.to_dict()
+        return out
 
 
 def plan_for(target: str, config: Any, *, target_type: TargetType | None = None,
@@ -186,7 +193,7 @@ def investigate(target: str, config: Any, *, target_type: TargetType | None = No
                 only: list[str] | None = None, exclude: list[str] | None = None,
                 on_progress: ProgressFn | None = None,
                 max_queries: int = 8, follow_up_rounds: int = 1,
-                images: list[str] | None = None
+                images: list[str] | None = None, assist: Any = None
                 ) -> InvestigationReport:
     """Run the whole thing: plan, expand, follow up, resolve.
 
@@ -207,6 +214,7 @@ def investigate(target: str, config: Any, *, target_type: TargetType | None = No
         Stage("sources"),
         Stage("expansion"),
         Stage("follow-up"),
+        Stage("assist"),
         Stage("correlation"),
         Stage("identity"),
     ]
@@ -283,6 +291,43 @@ def investigate(target: str, config: Any, *, target_type: TargetType | None = No
         else:
             by_name["follow-up"].state = "empty"
             by_name["follow-up"].detail = "nothing new worth pursuing"
+        tick()
+
+        # -- assist: what has nobody asked yet -------------------------------
+        # After the follow-up, because the model's whole contribution is
+        # reading a picture that is as complete as this run is going to make
+        # it and noticing the hole in it. Its questions then go through the
+        # same search service as every other query, and are evidenced by
+        # whatever answers them - never by the fact that a model said so.
+        by_name["assist"].state = "running"
+        tick()
+        report.assist = _assist(inv, engine, config, target, assist)
+        outcome = report.assist
+        if outcome is not None:
+            inv.assist = outcome.to_dict()
+        if outcome is None or not outcome.available:
+            by_name["assist"].state = "unavailable"
+            by_name["assist"].reason = (getattr(outcome, "reason", "")
+                                        or "no local model enabled")
+        elif outcome:
+            by_name["assist"].state = "done"
+            by_name["assist"].count = len(outcome.questions)
+            by_name["assist"].detail = (
+                f"{len(outcome.questions)} question(s), "
+                f"{len(outcome.hypotheses)} hypothesis(es)"
+                + (f", {len(outcome.discarded)} discarded" if outcome.discarded else ""))
+            if outcome.questions and service is not None and service.available():
+                asked = [planner.free_text(q.query, subject=target)
+                         for q in outcome.questions]
+                more, _ = _run_queries(service, planner,
+                                       [q for q in asked if q is not None],
+                                       report, result_sink=inv)
+                by_name["assist"].detail += f", {more} hit(s)"
+        else:
+            by_name["assist"].state = "empty"
+            by_name["assist"].detail = (
+                f"the model proposed nothing that survived checking"
+                + (f" ({len(outcome.discarded)} discarded)" if outcome.discarded else ""))
         tick()
 
         # -- what was learned about connections and identity -----------------
@@ -418,6 +463,33 @@ def _follow_up(inv: Investigation, planner: QueryPlanner, subject: str,
         if len(made) >= 6:
             break
     return made[:6]
+
+
+def _assist(inv: Any, engine: Engine, config: Any, target: str,
+            settings: Any) -> Any:
+    """Run the optional local model, or return an outcome saying why not.
+
+    Wrapped whole, because this is the one layer in the tool whose failure must
+    never be visible as anything but a named coverage gap. An investigation
+    that dies because a model server hung up has been made worse by a feature
+    that was supposed to be optional.
+    """
+    from .assist import AssistSettings, assist as run_assist
+
+    try:
+        if settings is None:
+            settings = AssistSettings.from_config(config)
+        if not settings.enabled:
+            from .assist import AssistOutcome
+
+            return AssistOutcome(reason="not enabled (--assist)",
+                                 provider=settings.provider, model=settings.model)
+        return run_assist(inv, engine.http, settings, subject=target)
+    except Exception as exc:                            # noqa: BLE001
+        from .assist import AssistOutcome
+
+        log.warning("assist failed: %s", exc)
+        return AssistOutcome(reason=f"assist failed: {type(exc).__name__}: {exc}")
 
 
 def _resolution_line(resolution: Any) -> str:

@@ -66,6 +66,19 @@ def add_parsers(sub: Any, common: Any, search_flags: Any) -> None:
     inv.add_argument("--browser-profile", default="",
                      help="a browser profile directory to reuse (default: a "
                           "throwaway profile, deleted afterwards)")
+    inv.add_argument("--assist", action="store_true",
+                     help="let a local model suggest what to ask next; it "
+                          "never produces findings (see `nova assist status`)")
+    inv.add_argument("--assist-url", default=None,
+                     help="where the model server is (default "
+                          "http://127.0.0.1:11434)")
+    inv.add_argument("--assist-model", default=None, metavar="NAME")
+    inv.add_argument("--assist-provider", default=None,
+                     choices=("ollama", "openai"))
+    inv.add_argument("--assist-allow-remote", action="store_true",
+                     help="permit a model server outside this machine or "
+                          "network. It discloses the investigation and may "
+                          "cost money; refused by default.")
     inv.add_argument("--image", action="append", default=[], metavar="FILE",
                      help="a photograph to read for clues (EXIF, text, logos)")
     inv.add_argument("--dry-run", action="store_true",
@@ -109,6 +122,145 @@ def add_parsers(sub: Any, common: Any, search_flags: Any) -> None:
     br.add_argument("--show", action="store_true", help="run visibly")
     br.add_argument("--profile", default="")
     common(br)
+
+    asi = sub.add_parser(
+        "assist",
+        help="check the optional local model that suggests what to ask next")
+    asi.add_argument("action", nargs="?", default="status",
+                     choices=("status", "test"))
+    asi.add_argument("--assist-url", default=None)
+    asi.add_argument("--assist-model", default=None)
+    asi.add_argument("--assist-provider", default=None,
+                     choices=("ollama", "openai"))
+    common(asi)
+
+
+# ---------------------------------------------------------------------- assist
+
+
+def _assist_settings(args: argparse.Namespace, cfg: Any) -> Any:
+    """Flag over env over config.json over default, same as every other flag.
+
+    Every ``--assist-*`` option defaults to ``None`` so an unset flag cannot
+    overwrite a value the operator put in ``config.json`` - the one rule
+    ``cli.py`` exists to enforce, and the one a new flag quietly breaks.
+    """
+    from .core.assist import AssistSettings
+
+    settings = AssistSettings.from_config(cfg)
+    if getattr(args, "assist", False):
+        settings.enabled = True
+    for flag, field in (("assist_url", "base_url"), ("assist_model", "model"),
+                        ("assist_provider", "provider")):
+        value = getattr(args, flag, None)
+        if value:
+            setattr(settings, field, value.rstrip("/") if field == "base_url"
+                    else value)
+    if getattr(args, "assist_allow_remote", False):
+        settings.allow_remote = True
+    return settings
+
+
+def _print_assist(outcome: Any) -> None:
+    """Show the model's suggestions, fenced off from everything it is not.
+
+    Printed under its own heading, with the word *hypothesis* on every line and
+    the sentence that says what these are. The section exists to be read by
+    somebody scrolling fast, and somebody scrolling fast must not be able to
+    mistake a machine's guess for a source's statement.
+    """
+    if outcome is None or not (outcome.questions or outcome.hypotheses
+                               or outcome.discarded):
+        return
+    out = sys.stderr
+    print("LOCAL MODEL - suggestions only. Nothing here is evidence, and "
+          "nothing here\nentered the graph. Every question below was run and "
+          "is evidenced by\nwhatever answered it, not by having been "
+          "suggested.\n", file=out)
+    if outcome.questions:
+        print("  questions it would ask next:", file=out)
+        for q in outcome.questions:
+            print(f"    - {q.query}", file=out)
+            if q.why:
+                print(f"        {q.why}", file=out)
+    if outcome.hypotheses:
+        print("\n  hypotheses (unverified readings of the evidence):", file=out)
+        for h in outcome.hypotheses:
+            print(f"    - {h.claim}", file=out)
+            print(f"        rests on: {', '.join(h.supports)}", file=out)
+            if h.confirm_with:
+                print(f"        confirm by: {h.confirm_with}", file=out)
+            if h.refute_with:
+                print(f"        refute by: {h.refute_with}", file=out)
+    if outcome.discarded:
+        print(f"\n  discarded {len(outcome.discarded)} by the citation check:",
+              file=out)
+        for why in outcome.discarded[:5]:
+            print(f"    - {why}", file=out)
+    print(file=out)
+
+
+def cmd_assist(args: argparse.Namespace, cfg: Any) -> int:
+    """Say whether a model is reachable, and prove it end to end."""
+    from .core.assist import Assistant, validate
+
+    settings = _assist_settings(args, cfg)
+    settings.enabled = True
+    local, where = settings.locality()
+    print(f"provider : {settings.provider}")
+    print(f"endpoint : {settings.base_url}  ({where})")
+    print(f"model    : {settings.model}")
+
+    # Through the Engine rather than a bare Fetcher, so the endpoint is
+    # contacted with the same timeouts, proxy and TLS settings as everything
+    # else the operator configured.
+    from .core.engine import Engine
+
+    engine = Engine(cfg)
+    http = engine.http
+    try:
+        client = Assistant(http, settings)
+        ok, why = client.check()
+        print(f"status   : {'ready' if ok else 'unavailable'} - {why}")
+        if not ok:
+            print("\nNOVA runs fine without it; every stage that would have "
+                  "used it\nsays so instead. To add one, free and local:\n"
+                  "  1. install Ollama from https://ollama.com/download\n"
+                  f"  2. ollama pull {settings.model}\n"
+                  "  3. nova assist test\n"
+                  "\nAnything OpenAI-compatible works too "
+                  "(--assist-provider openai).")
+            return EXIT_NO_FINDINGS
+        if args.action != "test":
+            print("\nIt suggests questions and hypotheses only. Nothing it says "
+                  "enters\nthe evidence graph, and a hypothesis citing an entity "
+                  "that does not\nexist is discarded.")
+            return EXIT_OK
+
+        started = time.monotonic()
+        text, error = client.ask(
+            "SUBJECT: example.com\n\nENTITIES (id | kind | relevance | "
+            "independent sources):\n  domain:example.com | domain | 1.000 | 1\n"
+            "  email:webmaster@example.com | email | 0.412 | 2\n\n"
+            "GAPS AND UNFOLLOWED LEADS:\n  whois: skipped - needs a key\n")
+        if error:
+            print(f"\ntest     : FAILED - {error}", file=sys.stderr)
+            return EXIT_NO_FINDINGS
+        got = validate(text, {"domain:example.com", "email:webmaster@example.com"})
+        print(f"\ntest     : ok in {time.monotonic() - started:.1f}s")
+        print(f"questions: {len(got.questions)}")
+        for q in got.questions:
+            print(f"  - {q.query}")
+        print(f"hypotheses: {len(got.hypotheses)}")
+        for h in got.hypotheses:
+            print(f"  - {h.claim}  [cites {', '.join(h.supports)}]")
+        if got.discarded:
+            print(f"discarded: {len(got.discarded)}")
+            for d in got.discarded:
+                print(f"  - {d}")
+        return EXIT_OK
+    finally:
+        engine.close()
 
 
 # --------------------------------------------------------------------- browser
@@ -326,7 +478,7 @@ def cmd_investigate(args: argparse.Namespace, manager: Any, cfg: Any,
             only=args.only.split(",") if args.only else None,
             exclude=args.exclude.split(",") if args.exclude else None,
             on_progress=on_progress, max_queries=max(0, args.max_queries),
-            images=list(args.image or []),
+            images=list(args.image or []), assist=_assist_settings(args, cfg),
         )
     finally:
         if browser is not None:
@@ -343,6 +495,7 @@ def cmd_investigate(args: argparse.Namespace, manager: Any, cfg: Any,
     if not args.quiet:
         print(report.tree(), file=sys.stderr)
         print(file=sys.stderr)
+        _print_assist(report.assist)
 
     rendered = inv
     if args.redact:

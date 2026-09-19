@@ -128,6 +128,14 @@ class Query:
                 "origin": self.origin, "ambiguous": self.ambiguous}
 
 
+#: Search operators NOVA knows how to degrade away. Used to read them back out
+#: of a query somebody else wrote, so ``Query.for_engine`` can strip the ones a
+#: given engine does not implement.
+_OPERATOR = re.compile(
+    r"\b(site|filetype|ext|intitle|inurl|intext|inbody|related|cache|"
+    r"allintitle|allinurl|before|after|lang|loc)\s*:", re.I)
+
+
 def _tidy(text: str) -> str:
     """Clean up what is left after operators are removed.
 
@@ -486,6 +494,32 @@ class QueryPlanner:
                 f"the subject's link to this {kind}", (), base=0.5,
                 origin=f"{origin}:{discovery}"))
         return self._rank(made, None)
+
+    def free_text(self, text: str, *, subject: str = "",
+                  origin: str = "assist") -> Query | None:
+        """A query somebody else wrote, made safe to run. ``None`` if unusable.
+
+        The way a suggestion from the optional local model gets executed. It is
+        deliberately the *weakest* category the planner has: a question nobody
+        has evidence for is worth asking and worth ranking below every question
+        the evidence itself produced.
+
+        Operators are detected rather than trusted, so an engine that cannot
+        take ``site:`` gets the degraded form from :meth:`Query.for_engine`
+        instead of a literal search for the word "site".
+        """
+        text = " ".join(str(text or "").split())[:200]
+        if len(text) < 3:
+            return None
+        found = tuple(sorted({m.group(1).lower() for m in _OPERATOR.finditer(text)}))
+        # Not knowing whose result a hit is remains the difference between a
+        # lead and a portrait of somebody else, so a suggestion that never
+        # names the subject is flagged exactly as a bare common name is.
+        names = bool(subject) and subject.casefold() in text.casefold()
+        return self._make(text, Category.GENERAL,
+                          "suggested by the local model; unevidenced until a "
+                          "source answers it", found,
+                          base=0.45, origin=origin, ambiguous=not names)
 
     # -- feedback -----------------------------------------------------------
 

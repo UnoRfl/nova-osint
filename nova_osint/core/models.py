@@ -334,6 +334,12 @@ class Investigation:
     #: The record of which rung of the free-first ladder answered, and what
     #: happened on the ones above it.
     routes: list[dict[str, Any]] = field(default_factory=list)
+    #: An ``assist.AssistOutcome`` as a plain dict, when a local model was
+    #: enabled. Carried here rather than only on the console report so the
+    #: machine-readable output shows the suggestions *and* what the citation
+    #: check threw away - a consumer that can see the questions but not the
+    #: discards has been told the flattering half.
+    assist: dict[str, Any] = field(default_factory=dict)
 
     def finish(self) -> Investigation:
         """Freeze the clock.
@@ -414,4 +420,6 @@ class Investigation:
             out["providers"] = self.providers
         if self.routes:
             out["routes"] = self.routes
+        if self.assist:
+            out["assist"] = self.assist
         return out

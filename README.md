@@ -66,6 +66,37 @@ sources not consulted        these are gaps in coverage, not absences of evidenc
 Paid sources are off unless you pass `--allow-paid`. Nothing here needs a
 subscription to work.
 
+### The optional local model
+
+`--assist` lets a model running on your own machine suggest what to ask next.
+It is free (Ollama, or anything OpenAI-compatible), it is off by default, and
+it lives behind one rule:
+
+> **It produces questions and hypotheses. It never produces findings.**
+
+Nothing it says enters the evidence graph. Every hypothesis must cite entity
+ids that actually exist — one that invents a person is discarded, and the
+discard is printed:
+
+```
+  discarded 1 by the citation check:
+    - hypothesis cites 2 entity id(s) that do not exist (person:jane doe,
+      org:acme ltd): Jane Doe of Acme Ltd registered the domain in 2011.
+```
+
+Its surviving questions are run through the same search stage as every other
+query and ranked below all of them, so a suggestion that turns out to be right
+is evidenced by the page that confirmed it, never by having been suggested. A
+public endpoint is refused before a socket opens: it would disclose the
+investigation and it might charge you.
+
+```bash
+nova assist status
+```
+
+Without a model, the `assist` stage is a named coverage gap like any other and
+everything else runs unchanged.
+
 ## Install
 
 ```bash
@@ -413,6 +444,8 @@ reports unless you pass the same `--redact-salt` deliberately.
 --proxy URL            route everything through a proxy
 --min-severity high    show only what matters
 --pivot                follow discovered targets one level deep
+--assist               let a local model suggest questions (never findings)
+--assist-model NAME    which local model to use (default llama3.2:3b)
 --no-art               keep the progress line, drop the animation
 -q / --quiet           machine-friendly: no banner, no progress
 -v / -vv               log what each instrument is doing (-vv for debug)
