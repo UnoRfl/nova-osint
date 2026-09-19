@@ -635,3 +635,66 @@ it asked, what answered, and what could not be reached.
 | A browser backend | Subclass `BrowserProvider`, implement `installed()`, `open()` and `navigate()`. |
 | A document format | A branch in `docparse.parse` and a `kind_of` signature. |
 | A new evidence kind | One line in `graph.EVIDENCE`, with a comment arguing for the number. |
+
+---
+
+## Pivot quality: the rules that stop a scan chasing strangers
+
+Three bugs produced most of the bad output this tool has ever generated, and
+all three were the same mistake — **the entity layer trusting the caller's
+label instead of the value's shape.** A module says `USERNAME` and gets a
+username node; say it about a person's name and the engine points a 481-site
+sweep at a string containing a space.
+
+So the shape gate lives in `entities.Entity.make`, where it covers every
+emitter at once, beside the older rule that a name with a subdomain is a HOST
+whatever the caller said.
+
+| Rule | What it stopped |
+|---|---|
+| A handle cannot contain whitespace, `/`, `:`, or be an IP or 200 characters long | `Ryan Rafael`, `jireh joy pancho` becoming handles, and the "stuck on names" hang |
+| One `@` only in the fediverse `user@host` form | addresses mislabelled as handles |
+| A domain-shaped handle is **allowed** | on Bluesky a domain *is* the handle (`eastdakota.com`) |
+| An IP literal is an IP entity whatever it was called | fourteen domain modules running against `216.150.1.1` |
+
+### `core/infra.py` — co-location is not a relation
+
+`judge_host()` decides whether an address is shared infrastructure from three
+signals, strongest first: provider **naming** (a PTR or cert CN like
+`no-sni.vercel-infra.com`), AS **ownership**, and **population** — the signal
+that needs no list, because if forty unrelated names resolve there it is
+shared whoever runs it.
+
+A shared address keeps its finding and stops generating pivots. This is the
+same posture Amass takes when it declines to expand into cloud netblocks, and
+SpiderFoot when it files co-hosted sites as *affiliates* with a cap.
+
+### Three more rules of the same kind
+
+* **An unverified hit is not a confirmed one.** The username control probe
+  promotes a hit to `CONFIRMED` only when the control was actually tested and
+  rejected. A control that timed out, or that the site's own `regexCheck`
+  refuses, verifies nothing — and the control is generated to satisfy that
+  regex so it can be tested at all.
+* **An engine is never sent an operator it does not implement.** Every
+  `SearchEngine` declares `supports`; `SearchService._phrase_for` degrades the
+  query or skips the engine, and says which.
+* **Declining to follow a lead is a finding.** `Expansion.below_floor` names
+  what was discovered and deliberately not pursued, and the report says what
+  would raise it above the floor.
+
+### Bounds
+
+`work_key()` collapses a URL and its own host to one subject, so the nine
+modules that ask both the same question run once. A per-module time limit
+(`--module-time-limit`, default 180s) starves a slow module rather than
+letting it hold the run open — a thread cannot be killed, so past the
+deadline its requests return "module time limit reached" without a socket
+being opened, and the result degrades with that reason on it.
+
+### The suite is offline by construction
+
+`tests/conftest.py` closes the socket for every test not marked
+`@pytest.mark.network`. `Fetcher._once` is the only place that opens one.
+Before this, one phone test spent 95 seconds of a 105-second run on live
+lookups and nobody noticed, because it passed.
