@@ -236,6 +236,12 @@ class VirusTotalModule(Module):
             return
 
         seen: list[str] = []
+        #: When VirusTotal last saw each resolution. A passive-DNS answer is a
+        #: statement about the past, and the graph needs the date to say how
+        #: far in the past - a name that pointed here in 2018 is not evidence
+        #: that it points here now, and scoring it as though it were is how a
+        #: run assembles a picture of somebody's former hosting neighbours.
+        when: dict[str, float] = {}
         for row in rows:
             attrs = row.get("attributes") if isinstance(row, dict) else None
             if not isinstance(attrs, dict):
@@ -244,6 +250,9 @@ class VirusTotalModule(Module):
             if not value or value in seen:
                 continue
             seen.append(str(value))
+            date = attrs.get("date")
+            if isinstance(date, (int, float)) and date > 0:
+                when[str(value)] = float(date)
 
         if not seen:
             return
@@ -281,8 +290,12 @@ class VirusTotalModule(Module):
             return
 
         for value in seen[:15]:
+            age = when.get(value)
+            detail = "VirusTotal passive DNS - co-location is a lead, not a link"
+            if age:
+                detail += f" (last seen {_stamp(age)})"
             result.entity(
                 EntityType.DOMAIN if is_ip else EntityType.IP, value,
                 relation="passive-dns", evidence="passive-dns",
-                detail="VirusTotal passive DNS - co-location is a lead, not a link",
+                detail=detail, observed_at=age,
             )

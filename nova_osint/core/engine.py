@@ -274,6 +274,11 @@ class Expansion:
     #: of five different people - and then report nothing at all about having
     #: made that decision. Declining to follow a lead is a finding.
     below_floor: list[tuple[str, float]] = field(default_factory=list)
+    #: Leads that were found and **ruled out**: something argued against them
+    #: more strongly than anything argued for them. A different statement from
+    #: ``below_floor``, which is "nobody said much either way", and one the
+    #: reader needs kept apart - "we checked and it is not him" is a result.
+    ruled_out: list[tuple[str, str]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -283,6 +288,7 @@ class Expansion:
                            for e, s in self.unexplored],
             "below_floor": [{"entity": e, "score": round(s, 4)}
                             for e, s in self.below_floor],
+            "ruled_out": [{"entity": e, "reason": r} for e, r in self.ruled_out],
         }
 
 
@@ -529,6 +535,11 @@ class Engine:
             graph.connect(link.src, link.dst, link.label, Observation(
                 kind=link.kind, module=link.module or res.module, url=link.url,
                 detail=link.detail, evidence=link.evidence, llr=link.llr,
+                observed_at=link.observed_at, group=link.group,
+                # Stamped here rather than read from a clock inside the graph:
+                # the pair is what ``age_days`` means, both are stored, and a
+                # case reopened next year rebuilds to the identical scores.
+                recorded_at=res.started_at if link.observed_at else None,
             ))
         if res.subject is None:
             return
@@ -667,6 +678,17 @@ class Engine:
         ]
         expansion.below_floor = sorted(below, key=lambda p: -p[1])[:25]
 
+        # Leads the evidence argued against. Named rather than dropped: a lead
+        # that was checked and rejected is a different fact from a lead that
+        # was never reached, and a report that shows neither reads as a report
+        # that never looked.
+        expansion.ruled_out = [
+            (node.entity.eid,
+             self._objection(graph, node.entity.eid) or "evidence against it "
+             "outweighed the evidence for it")
+            for node in graph.contradicted()[:25]
+        ]
+
         inv.results.sort(key=lambda r: (r.target, r.module))
         inv.requests = list(self._ledger)
         inv.expansion = expansion
@@ -682,6 +704,19 @@ class Engine:
             expansion.stopped_by,
         )
         return inv
+
+    @staticmethod
+    def _objection(graph: EntityGraph, eid: str) -> str:
+        """The single strongest reason the graph gave for rejecting a lead."""
+        worst, reason = 0.0, ""
+        for edge in graph.edges_of(eid):
+            for ob in edge.observations:
+                if ob.strength < worst:
+                    worst = ob.strength
+                    reason = f"{ob.kind} ({ob.module})"
+                    if ob.detail:
+                        reason += f": {ob.detail}"
+        return reason
 
     @staticmethod
     def _budget_stop(budget: Budget, expansion: Expansion, started: float) -> str:

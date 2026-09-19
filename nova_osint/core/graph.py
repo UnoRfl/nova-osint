@@ -42,7 +42,8 @@ from __future__ import annotations
 
 import heapq
 import math
-from collections import defaultdict
+import urllib.parse
+from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -91,6 +92,20 @@ EVIDENCE: dict[str, float] = {
     "email-domain": 3.0,         # the domain half of an address
     "profile-email": 3.5,        # an address the account holder published
     "profile-link": 1.5,         # a link someone put on their own profile
+    #: ``schema.org`` ``sameAs`` on a page: the owner listing their own
+    #: accounts in a typed field, for search engines to read. Stronger than a
+    #: link because it is an assertion of identity rather than a hyperlink, and
+    #: short of a proof because nothing signs it.
+    "declared-account": 3.0,
+    #: The same platform URL sitting in a footer or a nav bar. Real, and
+    #: weaker: a link can point at a supplier, a designer's portfolio or a
+    #: friend, and on a business site it usually does not.
+    "linked-account": 1.0,
+    #: A page naming somebody as its founder, owner or proprietor. This is the
+    #: claim that answers "does this person run a business", and it is made by
+    #: the business about itself.
+    "site-owner": 3.0,
+    "declared-employer": 2.5,    # ``worksFor`` in a typed field
     "key-uid": 5.0,              # identity baked into a published public key
     "published-contact": 3.0,    # security.txt and friends
     "passive-dns": 2.0,          # historic resolution, demoted by hub degree
@@ -142,6 +157,73 @@ EVIDENCE: dict[str, float] = {
 #: worth reporting and worth *not* crawling: it is someone else's domain and
 #: pivoting into it silently widens the investigation onto a third party.
 NO_EXPAND = frozenset({"looks-like", "control-handle-matched", "explicit-denial"})
+
+#: How long a kind of evidence stays worth what it was worth, as a half-life in
+#: days. Absence from this table means "permanent", and the distinction is not
+#: about how old the record is but about **what the record claims**.
+#:
+#: A certificate that covered two names in 2019 covered them; the observation is
+#: history and history does not expire. An A record from 2019 claims where a
+#: name *points*, which is a statement about the present, and a name that
+#: pointed at an address six years ago is evidence of nothing today. Scoring
+#: the second like the first is how an investigation ends up asserting that a
+#: target owns a server they left in another decade.
+#:
+#: Applied to positive strength only. Evidence that argues *against* a link is
+#: not weakened by being old - a denial recorded in 2019 is still a denial.
+HALF_LIFE: dict[str, float] = {
+    # where something points right now
+    "dns-a": 180.0,
+    "dns-mx": 365.0,
+    "dns-ns": 365.0,
+    "reverse-dns": 180.0,
+    "asn-announced": 365.0,
+    "spf-include": 365.0,
+    "dmarc-rua": 365.0,
+    "dmarc-ruf": 365.0,
+    "subdomain-of": 545.0,
+    #: Historic by construction, and the worst offender: passive DNS will
+    #: happily report a shared-hosting address from years ago as a connection.
+    "passive-dns": 90.0,
+    "shared-hosting": 60.0,
+    # what a page or an account currently looks like
+    "favicon-hash": 365.0,
+    "page-structure-hash": 180.0,
+    "tracker-id-shared": 730.0,
+    "profile-link": 730.0,
+    "declared-account": 1095.0,
+    "linked-account": 730.0,
+    "site-owner": 1460.0,
+    "declared-employer": 730.0,
+    "profile-email": 730.0,
+    "handle-unverified": 365.0,
+    "handle-verified": 730.0,
+    "search-result": 180.0,
+    "social-follow": 365.0,
+    "mutual-follow": 730.0,
+    "org-member": 730.0,
+    "co-maintainer": 730.0,
+    "parked-domain": 180.0,
+}
+
+#: Below this the decay is not applied, so an observation with no usable dates
+#: behaves exactly as it did before temporal weighting existed.
+_MIN_AGE_DAYS = 1.0
+
+
+def decayed(kind: str, strength: float, age_days: float | None) -> float:
+    """``strength`` after ageing, for evidence that makes a present-tense claim.
+
+    Pure, and deliberately takes the age rather than a clock: the graph has to
+    rebuild identically from the store months later, which it cannot do if the
+    scores depend on when somebody reopened the case.
+    """
+    if strength <= 0 or age_days is None or age_days < _MIN_AGE_DAYS:
+        return strength
+    half = HALF_LIFE.get(kind)
+    if not half:
+        return strength
+    return strength * (0.5 ** (age_days / half))
 
 #: Above this many neighbours a node is infrastructure, not an identity. It is a
 #: soft threshold: :meth:`EntityGraph.specificity` decays smoothly, this only
@@ -213,19 +295,67 @@ class Observation:
     evidence: str | None = None
     #: Overrides the EVIDENCE table when a module can be more precise.
     llr: float | None = None
+    #: When the *source* says this was true, as a unix timestamp. Not when we
+    #: fetched it: a passive-DNS answer read today can be six years old, and
+    #: conflating the two dates produces a timeline of our own scanning.
+    observed_at: float | None = None
+    #: When we read it. Only ever used as the other end of :attr:`age_days`.
+    recorded_at: float | None = None
+    #: What this observation is not independent of. Left blank the module and
+    #: the host it read answer for it; set it explicitly when two modules are
+    #: known to read the same upstream - ``group="ct-logs"`` on both crt.sh and
+    #: CertSpotter says they are one source wearing two names.
+    group: str = ""
 
     @property
-    def strength(self) -> float:
+    def independence(self) -> str:
+        """The source this observation belongs to, for corroboration counting.
+
+        Two facts read out of one page by one module are one source's word, not
+        two. Defaulting to *module plus host* rather than the full URL is the
+        conservative reading: a module that fetched three pages from one site
+        still got its story from one site.
+        """
+        if self.group:
+            return self.group
+        host = ""
+        if self.url:
+            try:
+                host = (urllib.parse.urlsplit(self.url).hostname or "").casefold()
+            except ValueError:          # malformed URL - fall back to module
+                host = ""
+        return f"{self.module}@{host}" if host else (self.module or "anonymous")
+
+    @property
+    def age_days(self) -> float | None:
+        """How stale the claim already was when we collected it."""
+        if self.observed_at is None or self.recorded_at is None:
+            return None
+        return max(0.0, (self.recorded_at - self.observed_at) / 86400.0)
+
+    @property
+    def raw_strength(self) -> float:
+        """What the evidence would be worth if it were observed today."""
         if self.llr is not None:
             return self.llr
         return EVIDENCE.get(self.kind, 0.1)
 
+    @property
+    def strength(self) -> float:
+        return decayed(self.kind, self.raw_strength, self.age_days)
+
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "kind": self.kind, "module": self.module, "url": self.url,
             "detail": self.detail, "evidence": self.evidence,
             "llr": round(self.strength, 3),
+            "independence": self.independence,
         }
+        age = self.age_days
+        if age is not None:
+            d["age_days"] = round(age, 1)
+            d["llr_fresh"] = round(self.raw_strength, 3)
+        return d
 
 
 @dataclass
@@ -239,29 +369,60 @@ class Edge:
     def key(self) -> tuple[str, str, str]:
         return (self.src, self.dst, self.label)
 
+    def weights(self) -> list[float]:
+        """How much of each observation's strength actually counts, in order.
+
+        Log-odds add **only for independent evidence**, and an observation can
+        fail that test two different ways:
+
+        *Same kind.* crt.sh and CertSpotter both read the CT logs, so a second
+        ``cert-san`` is mostly the first one again.
+
+        *Same source.* Three different kinds - a tracker id, a favicon hash and
+        a page-structure hash - pulled out of one fetch of one page by one
+        module is one page's word three times. Before this, that edge summed to
+        9.5 nats and graded **A1**: "practically certain, corroborated by three
+        independent sources", off a single HTTP response.
+
+        Each observation is therefore halved once per stronger observation
+        sharing its kind, and again per stronger observation sharing its
+        source. The strongest of a kind and of a source keeps full weight, so
+        genuinely independent evidence is scored exactly as it was.
+        """
+        order = sorted(range(len(self.observations)),
+                       key=lambda i: -abs(self.observations[i].strength))
+        seen_kind: Counter[str] = Counter()
+        seen_source: Counter[str] = Counter()
+        out = [0.0] * len(self.observations)
+        for i in order:
+            ob = self.observations[i]
+            out[i] = (0.5 ** seen_kind[ob.kind]) * (0.5 ** seen_source[ob.independence])
+            seen_kind[ob.kind] += 1
+            seen_source[ob.independence] += 1
+        return out
+
     @property
     def llr(self) -> float:
-        """Combined strength of every observation on this edge.
+        """Combined strength of every observation on this edge."""
+        weights = self.weights()
+        return sum(ob.strength * w for ob, w in zip(self.observations, weights))
 
-        Independent observations add - that is the whole reason for working in
-        log-odds. But two observations of the *same kind* are usually not
-        independent (crt.sh and CertSpotter read the same CT logs), so repeats
-        of a kind are discounted geometrically rather than summed outright.
-        """
-        by_kind: dict[str, list[float]] = defaultdict(list)
-        for ob in self.observations:
-            by_kind[ob.kind].append(ob.strength)
-        total = 0.0
-        for strengths in by_kind.values():
-            strengths.sort(key=abs, reverse=True)
-            for i, s in enumerate(strengths):
-                total += s * (0.5 ** i)
-        return total
+    @property
+    def groups(self) -> set[str]:
+        """The distinct sources that support this edge."""
+        return {ob.independence for ob in self.observations if ob.strength > 0}
 
     @property
     def corroborations(self) -> int:
-        """How many *distinct* kinds of evidence support this edge."""
-        return len({ob.kind for ob in self.observations if ob.strength > 0})
+        """How many *independent sources* support this edge.
+
+        The Admiralty digit is the answer to "how many people told you this",
+        and it used to count kinds - which let one module reporting three kinds
+        of thing about one page claim three corroborations. Counting sources is
+        what the grade says it means.
+        """
+        return min(len(self.groups),
+                   len({ob.kind for ob in self.observations if ob.strength > 0}))
 
     @property
     def probability(self) -> float:
@@ -309,11 +470,26 @@ class Node:
     #: Module names that produced or touched it, for provenance.
     sources: set[str] = field(default_factory=set)
     first_seen: float = 0.0
+    #: Strongest positive evidence connecting this node to the investigation,
+    #: in nats. Set by :meth:`EntityGraph.rescore`.
+    support: float = 0.0
+    #: Strongest evidence arguing it does **not** belong, as a negative number.
+    against: float = 0.0
+    #: How many independent sources put this node where it is.
+    corroborations: int = 0
+
+    @property
+    def contradicted(self) -> bool:
+        """Is there more reason to reject this node than to pursue it?"""
+        return self.against < 0 and (self.support + self.against) <= 0
 
     def to_dict(self) -> dict[str, Any]:
         d = self.entity.to_dict()
         d.update(score=round(self.score, 4), depth=self.depth,
-                 expanded=self.expanded, sources=sorted(self.sources))
+                 expanded=self.expanded, sources=sorted(self.sources),
+                 support=round(self.support, 3), corroborations=self.corroborations)
+        if self.against:
+            d.update(against=round(self.against, 3), contradicted=self.contradicted)
         return d
 
 
@@ -418,10 +594,19 @@ class EntityGraph:
         edges would keep full relevance forever and the frontier would wander
         off the target; at 0.55 a fourth hop has to be exceptional to outrank an
         unexpanded second hop.
+
+        Two passes follow the search, and both exist because a widest path is
+        the strongest *single* reason to care about a node and an investigation
+        turns on there being more than one. :meth:`_corroborate` lets separate
+        chains reinforce each other; :meth:`_contradict` lets evidence against a
+        node count at all, which under a pure max it never could.
         """
         for node in self.nodes.values():
             node.score = 0.0
             node.depth = 0
+            node.support = 0.0
+            node.against = 0.0
+            node.corroborations = 0
         if not self.seed or self.seed not in self.nodes:
             return
         self.nodes[self.seed].score = 1.0
@@ -429,11 +614,13 @@ class EntityGraph:
         # heapq is a min-heap; negate to pop the strongest path first.
         heap: list[tuple[float, int, str]] = [(-1.0, 0, self.seed)]
         settled: set[str] = set()
+        order: list[str] = []
         while heap:
             neg, depth, eid = heapq.heappop(heap)
             if eid in settled:
                 continue
             settled.add(eid)
+            order.append(eid)
             score = -neg
             node = self.nodes[eid]
             node.score, node.depth = score, depth
@@ -449,6 +636,90 @@ class EntityGraph:
                 if candidate > self.nodes[other].score and candidate > 1e-4:
                     self.nodes[other].score = candidate
                     heapq.heappush(heap, (-candidate, depth + 1, other))
+
+        self._corroborate(order, decay=decay)
+        self._contradict()
+
+    def _corroborate(self, order: list[str], *, decay: float) -> None:
+        """Let a node reached by several independent routes outrank one that wasn't.
+
+        The widest-path search keeps a node's **best** chain and throws the rest
+        away, so an account found both through the registrant's address and
+        through a commit in a repository scored exactly what it would have
+        scored on either one alone. Corroboration from converging routes is the
+        single strongest signal this tool produces, and the frontier could not
+        see it.
+
+        Contributions combine as a noisy-OR - ``1 - Π(1 - c)`` - which is the
+        honest combination for causes that would each explain the observation
+        on their own. It degrades to the old maximum when there is one route,
+        can never exceed 1, and at most three routes are counted because the
+        fourth is nearly always the first three again.
+
+        Routes count as separate only when the evidence carrying them comes
+        from different sources, so a module that writes two edges into the same
+        node cannot corroborate itself. Nodes are processed in the order the
+        search settled them, which is by descending relevance, so a boost is
+        only ever built from parents that were already final.
+        """
+        for eid in order:
+            node = self.nodes[eid]
+            if eid == self.seed or node.depth == 0:
+                continue
+            routes: dict[str, float] = {}
+            for other in self._adj[eid]:
+                parent = self.nodes[other]
+                if parent.depth >= node.depth or parent.score <= 0.0:
+                    continue
+                hub = max(self.degree(eid), self.degree(other))
+                for edge in self.between(eid, other):
+                    eff = edge.effective_llr(hub)
+                    if eff <= 0:
+                        continue
+                    contribution = parent.score * transmittance(eff) * decay
+                    for group in edge.groups:
+                        if contribution > routes.get(group, 0.0):
+                            routes[group] = contribution
+            node.corroborations = len(routes)
+            if len(routes) < 2:
+                continue
+            best = sorted(routes.values(), reverse=True)[:3]
+            combined = 1.0
+            for c in best:
+                combined *= 1.0 - c
+            combined = 1.0 - combined
+            if combined > node.score:
+                node.score = min(1.0, combined)
+
+    def _contradict(self) -> None:
+        """Record what argues against each node, and whether it wins.
+
+        The search skips non-positive edges entirely, which is right for
+        *routing* - you cannot travel along a denial - but meant disconfirming
+        evidence had no effect at all on a node that some other edge had already
+        reached. A handle a site explicitly denied (-4.0) sat in the frontier on
+        the strength of an unverified 200 from somewhere else (+0.4), and got a
+        request budget spent on it.
+
+        Nothing is deleted. Support and opposition are both recorded on the
+        node, :attr:`Node.contradicted` says which won, and the frontier
+        declines to expand the losers - so the report can say "found, and ruled
+        out, and here is what ruled it out" instead of quietly not mentioning
+        them.
+        """
+        for eid, node in self.nodes.items():
+            if eid == self.seed:
+                continue
+            support = against = 0.0
+            for edge in self.edges_of(eid):
+                other = edge.dst if edge.src == eid else edge.src
+                hub = max(self.degree(eid), self.degree(other))
+                value = edge.effective_llr(hub)
+                if value > support:
+                    support = value
+                elif value < against:
+                    against = value
+            node.support, node.against = support, against
 
     # -- frontier ------------------------------------------------------------
 
@@ -470,10 +741,22 @@ class EntityGraph:
             and n.score >= min_score
             and n.depth <= max_depth
             and (allowed is None or n.entity.etype in allowed)
+            and not n.contradicted
             and not self._only_reachable_by_dead_edges(n.entity.eid)
         ]
-        out.sort(key=lambda n: (-n.score, n.depth, n.entity.eid))
+        out.sort(key=lambda n: (-n.score, -n.corroborations, n.depth, n.entity.eid))
         return out
+
+    def contradicted(self) -> list[Node]:
+        """Leads the evidence argued against, strongest objection first.
+
+        Reported rather than dropped, for the same reason
+        :attr:`~nova_osint.core.engine.Expansion.below_floor` is: declining to
+        follow a lead is a decision, and a decision the reader cannot see is
+        indistinguishable from a source that was never checked.
+        """
+        return sorted((n for n in self.nodes.values() if n.contradicted),
+                      key=lambda n: n.support + n.against)
 
     def _only_reachable_by_dead_edges(self, eid: str) -> bool:
         """True when every path here is one we refuse to expand through."""

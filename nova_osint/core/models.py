@@ -166,6 +166,15 @@ class Link:
     evidence: str | None = None
     #: Explicit strength, when the module can be more precise than the table.
     llr: float | None = None
+    #: When the source says the link was true, as a unix timestamp. A module
+    #: that reads a historical record - passive DNS, a certificate's validity
+    #: window, an archived page - sets this, and the graph ages the evidence
+    #: accordingly. Left ``None`` the observation is treated as current, which
+    #: is what every live lookup is.
+    observed_at: float | None = None
+    #: Two modules known to read the same upstream pass the same string here so
+    #: the graph counts them as one source rather than two corroborations.
+    group: str = ""
 
 
 @dataclass
@@ -202,7 +211,8 @@ class ScanResult:
 
     def entity(self, etype: EntityType | str, value: Any, *, relation: str,
                evidence: str, url: str | None = None, detail: str = "",
-               llr: float | None = None, **attrs: Any) -> Entity | None:
+               llr: float | None = None, observed_at: float | None = None,
+               group: str = "", **attrs: Any) -> Entity | None:
         """Record a discovery and connect it to what this module was scanning.
 
         The common case by far, so it is one call: "I found this thing, here is
@@ -220,7 +230,8 @@ class ScanResult:
         self.nodes.append(found)
         if self.subject is not None and found.eid != self.subject.eid:
             self.link(self.subject, found, relation, evidence,
-                      url=url, detail=detail, llr=llr)
+                      url=url, detail=detail, llr=llr,
+                      observed_at=observed_at, group=group)
         # Also record it the old way when it is something a user could scan.
         # The report's pivot section and --pivot both read Pivot objects, and a
         # module migrating to entity() should not silently empty them.
@@ -233,10 +244,12 @@ class ScanResult:
 
     def link(self, src: Entity, dst: Entity, relation: str, evidence: str, *,
              url: str | None = None, detail: str = "",
-             llr: float | None = None) -> None:
+             llr: float | None = None, observed_at: float | None = None,
+             group: str = "") -> None:
         """Connect two entities that are not necessarily the scan's subject."""
         self.links.append(Link(src=src, dst=dst, label=relation, kind=evidence,
-                               module=self.module, url=url, detail=detail, llr=llr))
+                               module=self.module, url=url, detail=detail, llr=llr,
+                               observed_at=observed_at, group=group))
 
     def error(self, message: str) -> None:
         self.errors.append(message)

@@ -127,6 +127,19 @@ in `modules/` imports anything else in `modules/`.
 | `virustotal.py` | `virustotal` (reputation, categories, passive DNS) |
 | `securitytrails.py` | `securitytrails` (DNS history, pre-privacy WHOIS) |
 | `dorks.py` | `dorks` — builds search URLs, never runs them |
+| `declared.py` | `declared` — accounts, owner, occupation and business type from the site's own structured data |
+
+> `declared` is the only route into the platforms that refuse anonymous
+> lookups. Facebook, Instagram, Threads and LinkedIn cannot be tested by any
+> username catalogue — and they are exactly the platforms a business
+> advertises, in a `schema.org` block put there for search engines. `sameAs`
+> means "these accounts are also me"; `founder`, `jobTitle` and `worksFor`
+> answer what someone does and whether they own the company, and they land as
+> `<name>: occupation` / `<name>: employer` findings, which is the shape
+> `biography.ATTRIBUTES` already reads. Several accounts per platform survive:
+> a business has a page *and* a profile. `core/structured.py` is the parser —
+> pure, stdlib, no socket — and it also reads Open Graph, microdata, `rel="me"`
+> and plain links, because most small sites publish none of the first three.
 
 ### `gui/` — the desktop app
 
@@ -289,6 +302,46 @@ hop count.
 > so propagating probability hands half the parent's relevance through a link we
 > have no reason to believe — and a one-hop guess then outranks a three-hop
 > cryptographic proof.
+
+#### Four rules about what counts as evidence
+
+Each was measured on the live code before it was written down, and each has a
+test in `tests/test_evidence_quality.py` naming the number the old code gave.
+
+**An observation is discounted for its source as well as its kind.**
+`Edge.weights` halves an observation once per stronger observation sharing its
+kind, and again per stronger observation sharing its `independence` — which
+defaults to *module plus the host it read*. A tracker id, a favicon hash and a
+page-structure hash pulled out of one fetch by one module used to sum to 9.5
+nats and grade **A1**: "practically certain, three independent sources", off a
+single HTTP response. `corroborations` counts sources now, not kinds, because
+that is what the Admiralty digit says it means. Two modules known to read one
+upstream pass an explicit `group=` and count once.
+
+**Converging routes corroborate.** A widest path keeps a node's best chain and
+throws the rest away, so an account found *both* through the registrant's
+address *and* through a pushed commit scored exactly what it would have scored
+on either alone — 0.2412 either way, and the frontier could not tell them
+apart. `_corroborate` combines independent routes as a noisy-OR, capped at
+three routes and at 1.0, degrading to the old maximum when there is one route.
+
+**Evidence that makes a present-tense claim expires.** `HALF_LIFE` ages a kind
+of observation, and the distinction is not how old the record is but what the
+record *claims*: an A record says where a name points **now**, a certificate
+says something that happened, and a thing that happened stays happened. Passive
+DNS has a 90-day half-life; `cert-san` has none. Decay applies to positive
+strength only — a denial recorded in 2019 is still a denial. The graph stays
+clock-free: a module stamps `observed_at`, the engine stamps `recorded_at`, and
+a case reopened next year rebuilds to identical scores.
+
+**A lead that was ruled out is not a lead.** The search skips non-positive
+edges, which is right for routing and was wrong for judgement — disconfirming
+evidence had no effect at all on a node some other edge had already reached, so
+a handle carrying an explicit `-4.0` denial sat in the frontier on the strength
+of an unverified `+0.4` elsewhere. `_contradict` records `support` and `against`
+on every node, `frontier` skips the losers, and `Expansion.ruled_out` names them
+with the objection — kept apart from `below_floor`, because "we checked and it
+is not him" and "nobody said much either way" are different results.
 
 ### `core/store.py` — what was found, and proof of it
 
