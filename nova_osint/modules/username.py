@@ -91,6 +91,37 @@ def _random_handle() -> str:
     return "zz" + "".join(random.choice(alphabet) for _ in range(10))
 
 
+def _control_for(meta: dict) -> str:
+    """A handle nobody owns that this particular site will still accept.
+
+    A control the site itself rejects tests nothing: the request never
+    reaches the lookup, and the "it did not claim the control" conclusion is
+    drawn from the site's input validation rather than from its user
+    database. Sites with a minimum length, or one that forbids digits, used
+    to reject the generic control and hand back a free CONFIRMED.
+
+    So the control is re-rolled against the site's own ``regexCheck`` a few
+    times, in decreasing order of exoticism. If none fit, the caller finds
+    out - :meth:`_check` returns ``not-applicable`` and the hit stays
+    unverified rather than being promoted.
+    """
+    regex = meta.get("regexCheck")
+    candidates = [_random_handle(),
+                  "zz" + "".join(random.choice(string.ascii_lowercase)
+                                 for _ in range(10)),
+                  "".join(random.choice(string.ascii_lowercase)
+                          for _ in range(16))]
+    if not regex:
+        return candidates[0]
+    for candidate in candidates:
+        try:
+            if re.match(regex, candidate):
+                return candidate
+        except re.error:
+            return candidate
+    return candidates[0]
+
+
 @register
 class UsernameModule(Module):
     name = "username"
@@ -136,7 +167,10 @@ class UsernameModule(Module):
                 url=hit["url"],
                 confidence=hit["confidence"],
                 severity=Severity.NOTABLE,
-                extra={"method": hit["method"], "status": hit["status"]},
+                extra={"method": hit["method"], "status": hit["status"],
+                       "verified": hit.get("verified"),
+                       **({"caution": hit["unverified_reason"]}
+                          if hit.get("unverified_reason") else {})},
             )
 
         # Three different things used to be counted as "unreachable": sites we
@@ -178,8 +212,23 @@ class UsernameModule(Module):
                     f"only {len(answered)} of {len(items)} sites answered",
                 )
 
-        # A confirmed handle is the strongest pivot this tool produces.
+        unverified = [h for h in found if h.get("verified") is False]
+        if unverified:
+            result.add(
+                "hits that could not be verified",
+                f"{len(unverified)} of {len(found)} - the control probe did not "
+                f"answer, so these are unconfirmed leads",
+                source="username",
+                confidence=Confidence.CONFIRMED,
+                extra={"sites": sorted(h["site"] for h in unverified)[:40]},
+            )
+
+        # A confirmed handle is the strongest pivot this tool produces - and
+        # only a *verified* one is, which is why this reads `verified` rather
+        # than merely being in `found`.
         for hit in found[:40]:
+            if not hit.get("verified"):
+                continue
             if hit["site"].lower() == "github":
                 result.entity(EntityType.USERNAME, handle, relation="account-on-github",
                               evidence="handle-verified",
@@ -261,18 +310,49 @@ class UsernameModule(Module):
         }
 
     def _verify(self, hits: list[dict], sites: dict[str, dict]) -> list[dict]:
-        """Drop sites that also 'find' a handle nobody could own."""
-        control = _random_handle()
+        """Re-test each hit with a handle nobody owns, and grade on the answer.
+
+        Three outcomes, and the middle one is the whole point of this rewrite:
+
+        * the control **is** claimed - the site says yes to everybody, so the
+          hit carries no information and is dropped;
+        * the control **could not be tested** - it timed out, was rate limited,
+          or the site's own username rules reject the control string - so
+          nothing was verified and the hit keeps the confidence it already had;
+        * the control is **correctly rejected** - the hit is CONFIRMED.
+
+        The middle case used to be treated as the third. ``if ctrl and
+        ctrl["claimed"]`` is False when ``ctrl`` is ``None``, so a control
+        probe that failed promoted its hit to CONFIRMED - and under a sweep of
+        481 sites with per-host rate limiting, control probes fail in bulk.
+        That is how a scan came back with fifty-six "confirmed" accounts on
+        sites that had never been verified at all. An unavailable check must
+        never raise confidence; that rule holds everywhere else in this tool
+        and this was the one place it did not.
+        """
         checks = self.http.map(
-            lambda h: (h, self._check(h["site"], h["meta"], control)), hits
+            lambda h: (h, self._check(h["site"], h["meta"],
+                                      _control_for(h["meta"]))), hits
         )
         kept: list[dict] = []
         for pair in checks:
             if not pair:
                 continue
             hit, ctrl = pair
-            if ctrl and ctrl["claimed"]:
+            tested = bool(ctrl) and ctrl.get("outcome") == "answered"
+            if tested and ctrl["claimed"]:
                 continue  # site claims everything - useless signal
-            hit["confidence"] = Confidence.CONFIRMED
+            if tested:
+                hit["confidence"] = Confidence.CONFIRMED
+                hit["verified"] = True
+            else:
+                # Keep it, say so, and do not pretend it was checked.
+                hit["verified"] = False
+                hit["unverified_reason"] = (
+                    "the control probe did not answer"
+                    if not ctrl else
+                    "this site's username rules reject any control handle")
+                if hit["confidence"] is Confidence.CONFIRMED:
+                    hit["confidence"] = Confidence.LIKELY
             kept.append(hit)
         return kept

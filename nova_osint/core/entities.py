@@ -152,6 +152,62 @@ _TWO_LABEL_SUFFIXES = frozenset({
 })
 
 
+#: The longest handle any site in the bundled catalogue accepts. Beyond this
+#: the value is prose, not an account name.
+MAX_HANDLE = 64
+
+
+def is_handle_shaped(value: str) -> bool:
+    """Could this string be somebody's account name on any site NOVA checks?
+
+    This is a *shape* test, not a validity test, and it exists because the
+    entity layer used to take the caller's word for what a thing was. A module
+    that emitted ``USERNAME`` got a username node whatever it passed, and the
+    engine then expanded it: the name ``Ryan Rafael`` became a handle, and
+    github, keybase, npm, webfinger and a 481-site sweep were all pointed at a
+    value containing a space. Before URLs were percent-encoded that produced
+    seven ``InvalidURL`` failures reported as the sources' fault; afterwards it
+    produced four hundred real requests that time out, which is the same bug
+    wearing a longer coat - it is the reason a name search appears to hang.
+
+    Rejected: anything with whitespace (no site permits it), anything empty or
+    absurdly long, and anything that is plainly a different kind of identifier
+    wearing the wrong label - an address, a URL, or a bare domain name.
+    """
+    if not value or len(value) > MAX_HANDLE:
+        return False
+    # Whitespace is the decisive one: no site in the catalogue permits it, so
+    # a value containing any cannot be an account name anywhere, and every
+    # request built from one is guaranteed waste.
+    if any(c.isspace() for c in value):
+        return False
+    if "/" in value or ":" in value:
+        return False
+    # An IP is never a handle, however it was labelled.
+    if _is_ip_literal(value):
+        return False
+    # One "@" is allowed, and only in the fediverse ``user@host`` form, which
+    # is a real identifier WebFinger resolves. A domain-shaped value is also
+    # allowed: on Bluesky a domain *is* the handle, and refusing those lost
+    # eastdakota.com, which is a genuine account.
+    if "@" in value:
+        return bool(_ACCT.match(value))
+    return any(c.isalnum() for c in value)
+
+
+#: The fediverse address form, ``user@host``. Anything else containing "@" is
+#: an address that was mislabelled as a handle.
+_ACCT = re.compile(r"^[a-z0-9._+-]{1,64}@(?:[a-z0-9-]{1,63}\.)+[a-z]{2,63}$", re.I)
+
+
+def _is_ip_literal(text: str) -> bool:
+    try:
+        ipaddress.ip_address(text.strip().strip("[]"))
+    except ValueError:
+        return False
+    return True
+
+
 def canonical(etype: EntityType, value: Any) -> str:
     """One spelling per thing. Returns ``""`` when the value is unusable.
 
@@ -185,7 +241,8 @@ def canonical(etype: EntityType, value: Any) -> str:
         # never stripped of separators: "john.doe" and "johndoe" are different
         # accounts on every site NOVA checks. Alias generation is a *transform*
         # that emits a weak edge, not a canonicalisation that asserts identity.
-        return text.lstrip("@").casefold()
+        handle = text.lstrip("@").casefold()
+        return handle if is_handle_shaped(handle) else ""
     if etype in (EntityType.CERT, EntityType.SPKI, EntityType.KEY,
                  EntityType.FAVICON, EntityType.FILEHASH):
         return _canon_digest(text)
@@ -438,6 +495,19 @@ class Entity:
         operation, not an error worth unwinding a scan for.
         """
         raw = str(value or "").strip()
+
+        # An address is an address, whatever the caller called it. This is the
+        # same principle as the HOST rule below and it fixes a worse bug: a
+        # module emitting a resolved address as a DOMAIN produced a *host*
+        # node, hosts map to the domain target type, and fourteen domain
+        # modules were then pointed at an IP literal. That is where "SPF
+        # missing" for 216.150.1.1, "no RDAP record for 216.150.1.1", and a
+        # search for `site:*.216.150.1.1` returning Wikipedia articles about
+        # Alberta Highway 10 all came from - three hundred seconds of a scan
+        # spent asking an anycast edge address about its mail policy.
+        if etype in (EntityType.DOMAIN, EntityType.HOST) and _is_ip_literal(raw):
+            etype = EntityType.IP
+
         canon = canonical(etype, raw)
         if not canon:
             return None

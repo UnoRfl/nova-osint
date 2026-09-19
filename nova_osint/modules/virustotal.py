@@ -38,6 +38,7 @@ import time
 
 from ..core.entities import EntityType
 from ..core.http import hostname_of
+from ..core.infra import SAMPLE, SharedVerdict, judge_host
 from ..core.models import Confidence, ModuleStatus, ScanResult, Severity, TargetType
 from ..core.registry import Module, register
 
@@ -66,6 +67,13 @@ class VirusTotalModule(Module):
     active = False
 
     def run(self, target: str, result: ScanResult) -> None:
+        # Signals the shared-infrastructure judgement reads, collected as the
+        # report is parsed. Reset per run: a Module instance is short-lived,
+        # but an attribute surviving between two of them would be a
+        # cross-target leak of exactly the kind this module must not make.
+        self._as_owner = ""
+        self._ptr = ""
+        self._cert_cn = ""
         is_ip = result.target_type is TargetType.IP
         subject = target if is_ip else hostname_of(target)
         kind = "ip_addresses" if is_ip else "domains"
@@ -186,6 +194,8 @@ class VirusTotalModule(Module):
                                ("regional_internet_registry", "registry")):
                 if value := attrs.get(key):
                     result.add(label, value, source="virustotal")
+                    if key == "as_owner":
+                        self._as_owner = str(value)
         else:
             if registrar := attrs.get("registrar"):
                 result.add("registrar", registrar, source="virustotal")
@@ -204,6 +214,7 @@ class VirusTotalModule(Module):
             subject_cn = (cert.get("subject") or {}).get("CN")
             issuer = (cert.get("issuer") or {}).get("O")
             if subject_cn:
+                self._cert_cn = str(subject_cn)
                 result.add("TLS certificate", f"CN={subject_cn}"
                            + (f", issued by {issuer}" if issuer else ""),
                            source="virustotal")
@@ -236,16 +247,39 @@ class VirusTotalModule(Module):
 
         if not seen:
             return
+
+        # Co-location on shared infrastructure is not a lead worth spending a
+        # scan on. An anycast edge address answers for tens of thousands of
+        # unrelated sites, and following its neighbours turned one scan of a
+        # jeweller's website into forty-five pivots at cigar.cafe and
+        # 2026.fragile.ventures. The finding stays - "this site is on Vercel
+        # with many others" is true and sometimes useful - but it stops
+        # generating work.
+        verdict = judge_host(
+            cohosted=len(seen) if is_ip else 0,
+            as_owner=self._as_owner, ptr=self._ptr, cert_cn=self._cert_cn,
+        ) if is_ip else SharedVerdict(False)
+
+        label = "co-hosted domains" if is_ip else "historic IPs"
+        extra = {"count": len(seen)}
+        if verdict:
+            extra["shared_hosting"] = verdict.reason
+            extra["note"] = ("shared infrastructure: these names are "
+                             "neighbours, not relations, and are not followed")
+        else:
+            extra["note"] = ("co-location is a lead, not a link - corroborate "
+                             "before treating these as related")
         result.add(
-            "co-hosted domains" if is_ip else "historic IPs",
-            seen[:40],
+            label,
+            seen[:SAMPLE] if verdict else seen[:40],
             source="virustotal-passivedns",
-            severity=Severity.NOTABLE,
-            confidence=Confidence.LIKELY,
-            extra={"count": len(seen),
-                   "note": "shared hosting puts unrelated sites on one IP; "
-                           "co-location is a lead, not a link"},
+            severity=Severity.INFO if verdict else Severity.NOTABLE,
+            confidence=Confidence.POSSIBLE if verdict else Confidence.LIKELY,
+            extra=extra,
         )
+        if verdict:
+            return
+
         for value in seen[:15]:
             result.entity(
                 EntityType.DOMAIN if is_ip else EntityType.IP, value,

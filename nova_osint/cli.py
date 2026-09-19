@@ -255,6 +255,11 @@ def _search_flags(sp: argparse.ArgumentParser) -> None:
                           "http://localhost:8888")
     grp.add_argument("--no-search", action="store_true",
                      help="run no search engines at all")
+    grp.add_argument("--module-time-limit", type=float, default=None,
+                     metavar="SECONDS",
+                     help="stop any single module after this long and record "
+                          "what it did not get to (default 180; 0 disables). "
+                          "One slow source should not hold a scan open")
 
 
 def _common(sp: argparse.ArgumentParser) -> None:
@@ -333,6 +338,13 @@ def load_config(args: argparse.Namespace) -> tuple[ConfigManager, Config]:
         cfg.set_option("search_queries", max(0, int(args.search_queries)))
     if getattr(args, "searxng", None):
         cfg.set_option("searxng_url", args.searxng)
+    # A default rather than off: the complaint that a name search "gets stuck"
+    # was a sweep of 481 sites, doubled by verification and serialised by rate
+    # limiting, with nothing on screen. Three minutes is long enough for a
+    # thorough module and short enough that a run still feels alive.
+    cfg.set_option("module_time_limit",
+                   180.0 if getattr(args, "module_time_limit", None) is None
+                   else max(0.0, float(args.module_time_limit)))
 
     for problem in manager.problems:
         log.warning("config: %s", problem)

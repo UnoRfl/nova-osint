@@ -56,6 +56,14 @@ class DocumentModule(Module):
     active = True
 
     def run(self, target: str, result: ScanResult) -> None:
+        # A URL entity carries a scheme; a host or a bare name does not, and
+        # urllib raises `ValueError: unknown url type` on the latter before a
+        # byte is sent. That surfaced as "documents — failed" four times in
+        # one report, which reads as the source having broken rather than as
+        # NOVA handing it a value it never formatted.
+        if "://" not in target:
+            target = f"https://{target.lstrip('/')}"
+
         resp = self.http.get(target)
         if resp.access.is_refusal:
             result.degrade(ModuleStatus.UNAVAILABLE, resp.describe())

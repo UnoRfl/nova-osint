@@ -256,6 +256,14 @@ class SearchEngine(Provider):
     terms: str = ""
     #: Highest number of results one request returns.
     page_size: int = 10
+    #: Search operators this engine actually implements. An engine sent an
+    #: operator it does not know treats it as a word, and the results are
+    #: about the operator rather than about the target: `site:*.216.150.1.1`
+    #: went to Wikipedia's search API verbatim and came back with articles on
+    #: Alberta Highway 10, Papyrus Oxyrhynchus 80 and the 2004 Masters, all
+    #: recorded as findings about an IP address. Empty means "plain words
+    #: only", which is the honest default for an encyclopedia.
+    supports: frozenset[str] = frozenset()
 
     def build_url(self, query: str, page: int = 0) -> str:  # pragma: no cover
         raise NotImplementedError
@@ -413,6 +421,9 @@ class WikipediaEngine(SearchEngine):
         notes="MediaWiki search API; documented for programmatic use.",
         rate_limit="no hard limit; be polite",
     )
+    #: MediaWiki has its own operators (intitle:, insource:) and none of the
+    #: web ones. It is a corpus of articles, not an index of the web.
+    supports = frozenset({"intitle"})
 
     def build_url(self, query: str, page: int = 0) -> str:
         params = urllib.parse.urlencode({
@@ -465,6 +476,8 @@ class MarginaliaEngine(SearchEngine):
         notes="Public API key, intended for light programmatic use.",
         rate_limit="courtesy limit on the public key",
     )
+
+    supports = frozenset({"site"})
 
     #: The documented demo key. An operator with their own key sets
     #: ``module_options.marginalia_key`` and it is used instead.
@@ -522,6 +535,8 @@ class SearxngEngine(SearchEngine):
         homepage="https://searxng.org",
         notes="Operator-configured instance (module_options.searxng_url).",
     )
+    #: It forwards to upstream engines, so it inherits their operators.
+    supports = frozenset({"site", "filetype", "inurl", "intitle"})
 
     def instance(self) -> str:
         if self.config is None:
@@ -589,6 +604,7 @@ class MojeekEngine(SearchEngine):
         notes="Independent index. Result page, so opt-in (--serp-pages).",
     )
     scraping = True
+    supports = frozenset({"site", "inurl", "intitle"})
 
     def build_url(self, query: str, page: int = 0) -> str:
         params = urllib.parse.urlencode({"q": query, "s": page * 10})
@@ -613,6 +629,7 @@ class DuckDuckGoLiteEngine(SearchEngine):
         notes="HTML result page, so opt-in (--serp-pages).",
     )
     scraping = True
+    supports = frozenset({"site", "filetype", "inurl", "intitle"})
 
     def build_url(self, query: str, page: int = 0) -> str:
         return ("https://lite.duckduckgo.com/lite/?"
@@ -791,7 +808,47 @@ class SearchService:
 
     # -- searching ----------------------------------------------------------
 
-    def search(self, query: str, limit: int = 10, *,
+    @staticmethod
+    def _phrase_for(engine: SearchEngine, query: Any) -> tuple[str, str]:
+        """``(text to send, reason to skip)`` for one engine and one query.
+
+        A ``Query`` knows which operators it uses; a bare string is taken at
+        face value. Three outcomes:
+
+        * the engine implements everything the query uses - send it as written;
+        * it implements none of it, and the query is *made of* operators -
+          skip, because the degraded form asks a different question. Sending
+          ``site:*.216.150.1.1 -www`` to an encyclopedia and recording what
+          comes back as findings about an IP address is not a near miss, it is
+          noise with a citation;
+        * it is missing some operators but real words remain - send the
+          degraded form, and let the caller see which engine answered.
+        """
+        operators = getattr(query, "operators", None)
+        text = getattr(query, "text", query)
+        if not operators:
+            return str(text), ""
+        if operators <= engine.supports:
+            return str(text), ""
+
+        degraded = query.for_engine(engine.supports)
+        # What is left once the operators go. A query that was nothing but
+        # operators degrades to punctuation and negations, which is not a
+        # question anybody should be asked.
+        remains = re.sub(r"[-\"'()]|\bOR\b", " ", degraded).strip()
+        missing = ", ".join(sorted(operators - engine.supports))
+        if len(remains) < 4:
+            return "", f"needs {missing}:, which this engine does not implement"
+        # A query that lost most of itself is not a simplified version of the
+        # question, it is a different question. `site:example.com
+        # (inurl:login OR intitle:"index of")` degrades to `intitle:"index
+        # of"`, which asks an encyclopedia for articles titled "index of".
+        if len(degraded) < len(str(text)) * 0.5:
+            return "", (f"needs {missing}:, and without them less than half "
+                        f"the query survives")
+        return degraded, ""
+
+    def search(self, query: Any, limit: int = 10, *,
                every: bool | None = None) -> SearchOutcome:
         """Run ``query``. In ``auto`` mode, stop at the first engine that
         answers; in ``all`` mode, ask every available engine and merge.
@@ -802,7 +859,8 @@ class SearchService:
         engines is politer than putting all of them through one.
         """
         every = self.mode == "all" if every is None else every
-        outcome = SearchOutcome(query=query)
+        text = str(getattr(query, "text", query))
+        outcome = SearchOutcome(query=text)
 
         for engine in self._ordered():
             reason = self._why_not(engine)
@@ -810,7 +868,12 @@ class SearchService:
                 outcome.unavailable.append((engine.info.name, reason))
                 continue
 
-            got = self._ask(engine, query, limit)
+            phrase, skip = self._phrase_for(engine, query)
+            if skip:
+                outcome.unavailable.append((engine.info.name, skip))
+                continue
+
+            got = self._ask(engine, phrase, limit)
             outcome.attempts.append(got[1])
             if got[0]:
                 outcome.results.extend(got[0])
@@ -883,6 +946,8 @@ class BrowserSearchEngine(SearchEngine):
         source_type=SourceType.SEARCH_ENGINE,
         notes="Your own browser, on the ordinary result page.",
     )
+    #: A real search engine in a real browser: everything works.
+    supports = frozenset({"site", "filetype", "inurl", "intitle"})
 
     def __init__(self, browser: Any, config: Any = None,
                  engine: str = "duckduckgo") -> None:

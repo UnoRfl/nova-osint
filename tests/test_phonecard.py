@@ -211,9 +211,19 @@ def test_the_card_renderer_is_registered_for_scan():
 
 def test_cmd_phone_records_the_lookup_in_the_audit_chain(store, capsys, monkeypatch):
     from nova_osint import commands
+
+    # Offline by construction. The phone module parses the number locally and
+    # only reaches the network for enrichment, so blocking the socket proves
+    # the card still renders - and keeps the suite from depending on somebody
+    # else's uptime, which is what made this the slowest test in the run at
+    # ninety-five seconds.
+    from nova_osint.core import http as http_mod
     from nova_osint.core.config import Config
 
-    monkeypatch.setattr(commands, "__name__", commands.__name__)
+    def refuse(self, url, **kw):
+        return http_mod.Response(url=url, status=0, error="offline in tests")
+
+    monkeypatch.setattr(http_mod.Fetcher, "get", refuse)
     args = argparse.Namespace(number="+442079460958", format="card", output=None)
     code = commands.cmd_phone(args, Config(cache_dir=None), store)
     assert code == 0

@@ -186,6 +186,29 @@ def _skip_state(reason: str) -> str:
     return "requires key"
 
 
+def declined_rows(inv: Investigation) -> list[tuple[str, float]]:
+    """Leads that were found and deliberately not followed, weakest last.
+
+    Declining to follow a lead is a decision, and a report that shows only
+    what was pursued hides it. A scan of a common name finds several accounts
+    sharing the display name and follows none of them - which is right, and
+    which reads as "found nothing" unless it is said out loud.
+    """
+    expansion = inv.expansion
+    return list(getattr(expansion, "below_floor", []) or []) if expansion else []
+
+
+def declined_note(inv: Investigation) -> str:
+    """One line telling the reader how to turn a declined lead into a followed
+    one: give the tool something to test the candidates against."""
+    if not declined_rows(inv):
+        return ""
+    return ("These scored below the evidence floor, so none were followed. "
+            "Give NOVA something to separate them with - "
+            "-K employer=..., -K city=..., -K born=... - and the ones that "
+            "match will rise above it.")
+
+
 def unavailable_sources(inv: Investigation) -> list[tuple[str, str, str]]:
     """Just the rows a reader must not mistake for "nothing was there"."""
     return [r for r in source_rows(inv) if r[1] not in ("found", "not found")]
@@ -354,6 +377,20 @@ def render_console(inv: Investigation, *, verbose: bool = False,
                   subtitle="[dim]these are gaps in coverage, not absences of "
                            "evidence[/dim]",
                   border_style="magenta", box=box.ROUNDED)
+        )
+
+    declined = declined_rows(inv)
+    if declined:
+        dt = Table(box=box.SIMPLE, show_header=True, header_style="bold cyan",
+                   expand=True)
+        dt.add_column("lead", overflow="fold")
+        dt.add_column("score", width=10, no_wrap=True)
+        for eid, score in declined[:12]:
+            dt.add_row(eid, f"{score:.4f}")
+        console.print(
+            Panel(dt, title="[bold]found, not followed[/bold]",
+                  subtitle=f"[dim]{declined_note(inv)}[/dim]",
+                  border_style="cyan", box=box.ROUNDED)
         )
 
     links = connection_rows(inv)
@@ -597,6 +634,18 @@ def render_markdown(inv: Investigation) -> str:
             "|---|---|---|",
         ]
         out += [f"| {name} | {state} | {detail or '-'} |" for name, state, detail in gaps]
+        out.append("")
+    declined = declined_rows(inv)
+    if declined:
+        out += [
+            "### Leads found but not followed",
+            "",
+            declined_note(inv),
+            "",
+            "| Lead | Score |",
+            "|---|---|",
+        ]
+        out += [f"| `{eid}` | {score:.4f} |" for eid, score in declined[:15]]
         out.append("")
     links = connection_rows(inv)
     if links:

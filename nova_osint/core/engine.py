@@ -31,6 +31,7 @@ from __future__ import annotations
 import collections
 import threading
 import time
+import urllib.parse
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -92,10 +93,24 @@ class _ModuleHttp:
     """
 
     def __init__(self, fetcher: Fetcher, module: str = "",
-                 evidence: Any = None) -> None:
+                 evidence: Any = None, deadline: float | None = None) -> None:
         self._fetcher = fetcher
         self._lock = threading.Lock()
         self.module = module
+        #: Monotonic time after which this module stops making requests.
+        #:
+        #: A thread cannot be killed, so the module is not interrupted - it is
+        #: starved. Past the deadline every request returns "module time limit
+        #: reached" without a socket being opened, the module's own loops run
+        #: out in milliseconds, and the result degrades with that reason on it.
+        #:
+        #: This is what stops one slow source holding a scan open. The 481-site
+        #: username sweep, doubled by its verification pass and serialised by
+        #: per-host rate limiting, could occupy a run for minutes with nothing
+        #: on screen - which is indistinguishable from a hang to the person
+        #: watching, and was reported as one.
+        self.deadline = deadline
+        self.starved = 0
         #: Optional :class:`~nova_osint.core.store.EvidenceStore`. When present
         #: every response body is filed by digest, so a finding can be traced
         #: back to the exact bytes it was read from months later.
@@ -109,6 +124,11 @@ class _ModuleHttp:
     # -- delegation ---------------------------------------------------------
 
     def get(self, url: str, **kw: Any) -> Response:
+        if self.deadline is not None and time.monotonic() > self.deadline:
+            with self._lock:
+                self.starved += 1
+            return Response(url=url, status=0,
+                            error="module time limit reached")
         resp = self._fetcher.get(url, **kw)
         self._record(resp, requested=url)
         return resp
@@ -160,6 +180,31 @@ class _ModuleHttp:
     @property
     def answered(self) -> int:
         return self.seen[AccessStatus.OK] + self.seen[AccessStatus.NOT_FOUND]
+
+
+def work_key(ent: Entity) -> str:
+    """What a module would actually be *asked about* if given this entity.
+
+    A site's front page and the site are one subject. ``https://example.com``
+    and ``example.com`` produce different entity ids - correctly, they are
+    different kinds of thing - but ``dns``, ``mailsec``, ``whois``,
+    ``subdomains``, ``wayback``, ``headers``, ``trackers`` and ``fingerprint``
+    ask the identical question of both and spend the requests twice. One real
+    scan ran seventy modules where forty would have done, and half of the
+    duplication was this.
+
+    A URL with a *path* is not collapsed: ``https://example.com/report.pdf``
+    is a document, and the document module must still get it.
+    """
+    if ent.etype is EntityType.URL:
+        parts = urllib.parse.urlsplit(ent.value)
+        if parts.path.strip("/") or parts.query:
+            return ent.eid
+        host = (parts.hostname or "").casefold()
+        return f"site:{host}" if host else ent.eid
+    if ent.etype in (EntityType.HOST, EntityType.DOMAIN):
+        return f"site:{ent.value.casefold()}"
+    return ent.eid
 
 
 def entity_for(target: str, ttype: TargetType) -> Entity | None:
@@ -219,6 +264,16 @@ class Expansion:
     #: Leads that scored well enough but were cut off. Named, not dropped: the
     #: user needs to know the investigation was truncated and where.
     unexplored: list[tuple[str, float]] = field(default_factory=list)
+    #: Leads that were found and deliberately **not** followed because the
+    #: evidence for them was too thin.
+    #:
+    #: These used to disappear. ``frontier(min_score=...)`` filters before the
+    #: unexplored list is built, so a scan of a common name would find five
+    #: accounts sharing the display name, decline to follow any of them - which
+    #: is the right call, following them is how these tools assemble a portrait
+    #: of five different people - and then report nothing at all about having
+    #: made that decision. Declining to follow a lead is a finding.
+    below_floor: list[tuple[str, float]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -226,6 +281,8 @@ class Expansion:
             "expanded": self.expanded, "stopped_by": self.stopped_by,
             "unexplored": [{"entity": e, "score": round(s, 4)}
                            for e, s in self.unexplored],
+            "below_floor": [{"entity": e, "score": round(s, 4)}
+                            for e, s in self.below_floor],
         }
 
 
@@ -368,7 +425,10 @@ class Engine:
         """Run one module behind a hard failure boundary."""
         res = ScanResult(module=module.name, target=target, target_type=ttype)
         res.subject = subject if subject is not None else entity_for(target, ttype)
-        recorder = _ModuleHttp(self.http, module.name, self.evidence)
+        limit = float(self.config.option("module_time_limit", 0) or 0)
+        recorder = _ModuleHttp(
+            self.http, module.name, self.evidence,
+            deadline=(time.monotonic() + limit) if limit > 0 else None)
         module.http = recorder  # type: ignore[assignment]
         guard: PassiveGuard | None = None
         if self.config.passive_only and not module.active:
@@ -397,6 +457,14 @@ class Engine:
             res.error(f"{type(exc).__name__}: {exc}")
             log.error("module %s failed: %s: %s", module.name, type(exc).__name__, exc)
         res.duration = time.monotonic() - started
+        if recorder.starved:
+            # Named, never silent: the module stopped early, so its silence is
+            # a gap rather than an answer.
+            res.degrade(ModuleStatus.PARTIAL,
+                        f"stopped after {res.duration:.0f}s at the per-module "
+                        f"time limit; {recorder.starved} request(s) not made")
+            res.error(f"{module.name} hit the {limit:.0f}s module time limit "
+                      f"with {recorder.starved} request(s) still to make")
         if guard is not None and guard.blocked:
             log.info("passive guard blocked %d request(s) from %s",
                      len(guard.blocked), module.name)
@@ -516,7 +584,7 @@ class Engine:
         expansion = Expansion()
         self._ledger.clear()
 
-        # (module name, entity id) pairs already run. Without this an entity
+        # (module name, subject key) pairs already run. Without this an entity
         # reachable by two paths is scanned twice and the second run silently
         # doubles the request count for no new information.
         done: set[tuple[str, str]] = set()
@@ -585,6 +653,20 @@ class Engine:
             if not (eid in seen or seen.add(eid))
         ]
 
+        # Everything that *was* discovered and deliberately not pursued. The
+        # floor is a judgement the report has to show its working for.
+        expandable = set(TO_TARGET_TYPE)
+        below = [
+            (node.entity.eid, node.score)
+            for node in graph.nodes.values()
+            if not node.expanded
+            and node.entity.etype in expandable
+            and node.entity.eid not in seen
+            and node.entity.eid != (graph.seed or "")
+            and 0.0 < node.score < budget.min_score
+        ]
+        expansion.below_floor = sorted(below, key=lambda p: -p[1])[:25]
+
         inv.results.sort(key=lambda r: (r.target, r.module))
         inv.requests = list(self._ledger)
         inv.expansion = expansion
@@ -624,9 +706,10 @@ class Engine:
         if ttype is None:
             return []
         _, modules, skipped = self.plan(ent.value, only, exclude, ttype)
-        modules = [m for m in modules if (m.name, ent.eid) not in done]
+        key = work_key(ent)
+        modules = [m for m in modules if (m.name, key) not in done]
         for m in modules:
-            done.add((m.name, ent.eid))
+            done.add((m.name, key))
         # Skips are recorded once, for the seed. Repeating "virustotal needs a
         # key" for every entity in a forty-node graph buries the report.
         if not inv.skipped:

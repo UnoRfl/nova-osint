@@ -375,7 +375,7 @@ def _run_queries(service: SearchService | None, planner: QueryPlanner,
     hits = 0
     discovered: list[tuple[str, str]] = []
     for query in queries:
-        outcome = service.search(query.text)
+        outcome = service.search(query)
         report.queries_run += 1
         planner.observe(query, len(outcome.results),
                         useful=0 if query.ambiguous else len(outcome.results))

@@ -109,7 +109,7 @@ class WebSearchModule(Module):
         refused = 0
 
         for query in queries:
-            outcome = service.search(query.text, self.RESULTS_PER_QUERY)
+            outcome = service.search(query, self.RESULTS_PER_QUERY)
             planner.observe(query, len(outcome.results),
                             useful=sum(1 for r in outcome.results
                                        if not query.ambiguous))

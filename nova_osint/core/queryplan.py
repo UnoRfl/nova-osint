@@ -115,13 +115,35 @@ class Query:
             return self.text
         text = self.text
         for op in sorted(self.operators - supports):
-            text = re.sub(rf"\b{op}:\S+\s*", "", text)
-        return " ".join(text.split())
+            # The term is a quoted phrase or a run of non-space characters,
+            # and it must not swallow a closing bracket: `\S+` ate the ")" of
+            # `(site:a.com OR site:b.com)` and left an unbalanced "(" behind,
+            # which is a worse query than the one we were trying to simplify.
+            text = re.sub(rf'\b{op}:(?:"[^"]*"|[^\s)]+)\s*', "", text)
+        return _tidy(text)
 
     def to_dict(self) -> dict[str, Any]:
         return {"text": self.text, "category": self.category.label,
                 "value": round(self.value, 3), "rationale": self.rationale,
                 "origin": self.origin, "ambiguous": self.ambiguous}
+
+
+def _tidy(text: str) -> str:
+    """Clean up what is left after operators are removed.
+
+    Stripping ``site:github.com OR site:gitlab.com`` out of a query leaves
+    ``( OR )``, and an engine handed that searches for the word "or" inside a
+    bracket. Degrading has to produce a question somebody could have typed,
+    or it is not degrading, it is corrupting.
+    """
+    text = re.sub(r"\(\s*(?:OR\s*)*\)", " ", text)          # empty groups
+    text = re.sub(r"\(\s*(?:OR\s+)+", "(", text)            # leading OR
+    text = re.sub(r"(?:\s+OR)+\s*\)", ")", text)            # trailing OR
+    text = re.sub(r"\bOR(?:\s+OR)+\b", "OR", text)          # OR OR OR
+    text = re.sub(r"\(\s*([^()\s]+)\s*\)", r"\1", text)     # one-term groups
+    text = re.sub(r"\(\s*\)", " ", text)
+    text = re.sub(r"^\s*(?:OR\s+)+|\s*(?:\s+OR)+\s*$", " ", text)
+    return " ".join(text.split())
 
 
 # ------------------------------------------------------------- name handling
