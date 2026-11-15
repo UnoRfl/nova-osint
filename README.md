@@ -1,3 +1,5 @@
+<p align="center"><img src=".github/assets/banner.png" alt="nova-osint banner" width="100%"></p>
+
 <div align="center">
 
 ```
