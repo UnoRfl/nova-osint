@@ -140,10 +140,11 @@ def test_the_gate_lets_people_and_role_addresses_through():
 
 
 def test_the_gate_does_not_touch_other_target_types():
-    """Only addresses are judged here; a host has ``infra.judge_host``."""
+    """Hosts and IPs are not judged here; a host has ``infra.judge_host``.
+    Usernames now are - by ``generic_handle`` - but a distinctive one passes."""
     assert pivot_refusal("noreply.example.com", TargetType.DOMAIN) == ""
     assert pivot_refusal("1.2.3.4", TargetType.IP) == ""
-    assert pivot_refusal("noreply", TargetType.USERNAME) == ""
+    assert pivot_refusal("ada_lovelace1815", TargetType.USERNAME) == ""
 
 
 def test_follow_pivots_filters_before_it_limits():

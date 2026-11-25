@@ -139,3 +139,47 @@ def judge_host(*, cohosted: int = 0, as_owner: str = "", ptr: str = "",
 #: shared. The full list is a directory of strangers; a sample plus the count
 #: is what an investigator can actually use.
 SAMPLE = 10
+
+
+#: Edge ranges where one address fronts thousands of unrelated sites, so an
+#: address inside them identifies the *provider*, never the target. Static,
+#: because the pivot gate must decide before any lookup is spent.
+#: Cloudflare: https://www.cloudflare.com/ips-v4 and /ips-v6 (fetched
+#: 2026-11-26). Vercel: blocks confirmed by RDAP (VERCEL-01/08/09).
+#: Anything not listed is still caught at lookup time by ``judge_host``
+#: on the announcing AS.
+_EDGE_RANGES: dict[str, tuple[str, ...]] = {
+    "Cloudflare": (
+        "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
+        "141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
+        "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+        "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+        "2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32",
+        "2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32",
+    ),
+    "Vercel": ("76.76.21.0/24", "216.150.1.0/24", "216.150.16.0/24"),
+}
+
+
+def _compile_edges():  # type: ignore[no-untyped-def]
+    import ipaddress
+
+    return [(owner, ipaddress.ip_network(cidr))
+            for owner, cidrs in _EDGE_RANGES.items() for cidr in cidrs]
+
+
+_EDGE_NETS = _compile_edges()
+
+
+def shared_edge(address: str) -> str:
+    """The CDN whose shared edge this address is, or ``""``."""
+    import ipaddress
+
+    try:
+        ip = ipaddress.ip_address(str(address).strip())
+    except ValueError:
+        return ""
+    for owner, net in _EDGE_NETS:
+        if ip.version == net.version and ip in net:
+            return owner
+    return ""

@@ -243,9 +243,16 @@ def _basis(module: str, finding: Any) -> str:
     if getattr(finding, "confidence", None) is Confidence.POSSIBLE:
         return "possible"
     if module == "username":
-        # The username module confirms a profile responded, and re-tests it
-        # against a control handle unless --no-verify was passed.
-        return "confirmed"
+        # Only a hit that passed the control probe *and* showed positive
+        # evidence on the page is confirmed. This used to return "confirmed"
+        # for every hit not marked POSSIBLE - which included every hit whose
+        # control probe timed out, so the table's "+ verified" count was
+        # inflated by exactly the hits that had not been verified.
+        extra = getattr(finding, "extra", None) or {}
+        if (extra.get("verified") is True
+                and getattr(finding, "confidence", None) is Confidence.CONFIRMED):
+            return "confirmed"
+        return "possible"
     if module in ("keybase", "webfinger", "bluesky", "github", "packages"):
         return "confirmed"
     return "declared"
@@ -297,7 +304,7 @@ def render_text(accounts: list[SocialAccount]) -> str:
         if a.note:
             out.append(f"       {' ' * width}  {a.note}")
     out.append("")
-    out.append("    + verified by a lookup   ~ declared by a source")
+    out.append("    + account exists (checked)   ~ declared by a source")
     out.append("    * name matches, owner unconfirmed   "
                "? not checkable, open by hand")
     return "\n".join(out)
@@ -319,7 +326,7 @@ def render_markdown(accounts: list[SocialAccount]) -> str:
         out.append(f"| {BASIS_MARK[a.basis]} | {a.platform} | {handle} "
                    f"| <{a.url}> | {a.basis}{note} |")
     out += ["",
-            "`+` verified by a lookup &nbsp; `~` declared by a source &nbsp; "
+            "`+` account exists (checked) &nbsp; `~` declared by a source &nbsp; "
             "`*` name matches, owner unconfirmed &nbsp; "
             "`?` not checkable, open by hand", ""]
     return "\n".join(out)
@@ -344,6 +351,6 @@ def render_html(accounts: list[SocialAccount]) -> str:
     return (
         "<table><thead><tr><th></th><th>Platform</th><th>Handle</th>"
         "<th>Link</th></tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
-        "<p class='dim'>+ verified by a lookup &middot; ~ declared by a source "
+        "<p class='dim'>+ account exists (checked) &middot; ~ declared by a source "
         "&middot; ? not checkable anonymously, open by hand</p>"
     )

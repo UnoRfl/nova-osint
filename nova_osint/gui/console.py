@@ -1263,7 +1263,7 @@ class ConsoleScreen(ttk.Frame):
                 rows.append(("\n", "plain"))
                 if a.note:
                     rows.append((f"       {' ' * width}  {a.note}\n", "dim"))
-            rows.append(("\n    + verified by a lookup   ~ declared by a source   "
+            rows.append(("\n    + account exists (checked)   ~ declared by a source   "
                          "* name matched, owner unconfirmed   "
                          "? not checkable, open by hand\n", "dim"))
         else:

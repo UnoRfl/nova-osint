@@ -220,13 +220,40 @@ def test_malformed_key_material_is_data_not_an_error():
     assert ssh_fingerprint("!!! not base64 !!!") == ""
 
 
+def _armoured_v4_key(uid: str = "Alice <alice@example.org>") -> str:
+    """A syntactically real (cryptographically meaningless) v4 public key."""
+    body = (bytes([4]) + (1700000000).to_bytes(4, "big") + bytes([22])
+            + bytes([0, 8, 0xAB]))  # version, created, EdDSA, one tiny MPI
+    pkt = bytes([0xC0 | 6, len(body)]) + body
+    uid_b = uid.encode()
+    pkt += bytes([0xC0 | 13, len(uid_b)]) + uid_b
+    return ("-----BEGIN PGP PUBLIC KEY BLOCK-----\n\n"
+            + base64.b64encode(pkt).decode()
+            + "\n=abcd\n-----END PGP PUBLIC KEY BLOCK-----\n")
+
+
 def test_keys_become_the_strongest_kind_of_entity():
     http = FakeHttp({".keys": _resp(f"ssh-ed25519 {_KEY_BLOB} alice@host"),
-                     ".gpg": _resp("-----BEGIN PGP PUBLIC KEY BLOCK-----\nx\n")})
+                     ".gpg": _resp(_armoured_v4_key())})
     res = _run(KeyModule, http, "alice", TargetType.USERNAME)
-    assert _kinds(res) == {"key-fingerprint-shared"}
+    assert _kinds(res) == {"key-fingerprint-shared", "key-uid"}
     assert any(e.value.startswith("ssh/SHA256:") for e in res.nodes)
-    assert any(e.value.startswith("gpg/") for e in res.nodes)
+    gpg = [e.value for e in res.nodes if e.value.startswith("gpg/")]
+    assert len(gpg) == 1 and len(gpg[0]) == len("gpg/") + 40, \
+        "a v4 key is named by its 40-hex fingerprint"
+    assert any(e.value == "alice@example.org" for e in res.nodes)
+
+
+def test_githubs_no_key_placeholder_is_not_a_key():
+    """GitHub serves an armoured block to *every* account; with no key it is
+    a placeholder. Hashing the file gave all key-less accounts one shared
+    "key" - the strongest link kind - welding strangers together."""
+    placeholder = ("-----BEGIN PGP PUBLIC KEY BLOCK-----\n"
+                   "Note: This user hasn't uploaded any GPG keys.\n\n\n=twTO\n"
+                   "-----END PGP PUBLIC KEY BLOCK-----\n")
+    http = FakeHttp({".keys": _resp(""), ".gpg": _resp(placeholder)})
+    res = _run(KeyModule, http, "alice", TargetType.USERNAME)
+    assert not any(e.value.startswith("gpg/") for e in res.nodes)
 
 
 def test_two_handles_holding_one_key_are_linked():

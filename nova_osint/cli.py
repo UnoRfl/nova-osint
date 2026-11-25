@@ -479,8 +479,14 @@ def cmd_config(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def _resolve_output(path: Path, cfg: Config) -> Path:
-    """A bare filename goes to ``settings.output_directory``; a path is obeyed."""
+def _resolve_output(path: Path | str, cfg: Config) -> Path:
+    """A bare filename goes to ``settings.output_directory``; a path is obeyed.
+
+    ``nova investigate -o`` hands this a ``str`` (its parser has no
+    ``type=Path``), and the ``.parent`` read crashed *after* the scan had
+    finished - the whole run lost at the last line.
+    """
+    path = Path(path)
     if path.parent == Path("."):
         return cfg.output_dir / path
     return path

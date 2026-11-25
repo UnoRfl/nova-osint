@@ -910,6 +910,67 @@ removed is the weight. It applies in `Edge.effective_llr` beside hub demotion
 and for the same reason — degree catches a mailbox *this scan* saw on forty
 sites, and cannot catch `sales@` on a scan that found it twice.
 
+### The 2026-11-26 accuracy pass — what other tools taught, and what was wrong
+
+NOVA was read against Sherlock, Maigret, WhatsMyName, SpiderFoot,
+theHarvester, subfinder, Amass, Holehe, PhoneInfoga and OpenOSINT. Every
+defect below was reproduced first; `tests/test_accuracy_pass.py` holds one
+test per item.
+
+**Refusal is not an answer** (Maigret's `detect_error_page`). A `message`
+site read a WAF/Cloudflare/rate-limit page as a profile because the page
+lacked the "not found" text. `username._refusal` now maps 401/403/429/5xx,
+`cf-mitigated: challenge`, interstitial titles and the site's own `errors`
+markers to *refused* — counted, named, never a hit. A status the site
+documents as its not-found answer (`errorCode`, Maigret's `ignore403`) is
+still an answer.
+
+**Positive evidence.** `message`/`response_url` sites with presence strings
+need *present AND not absent*. Every hit also records whether the page names
+the handle (SpiderFoot's `musthavename`). Control-verified + positive →
+CONFIRMED; control-verified with only a status code → LIKELY.
+
+**The catalogue** (`core/sitedata.py`): Sherlock's list minus Sherlock CI's
+daily false-positive exclusions, with Maigret's entry replacing Sherlock's
+where Maigret has presence strings, plus Maigret's ranked enabled sites.
+722 sites on 2026-11-26. WhatsMyName is archived and CC BY-SA, so unused.
+
+**Generic handles.** Static gate (`engine.generic_handle`: role words, <4
+chars, digits) for derived leads, plus a measured one: a handle claimed on
+≥25 % of answering sites is demoted and pivots nowhere.
+
+**Module eligibility** (`Module.refuses(target)`). A module that cannot say
+anything about *this value* declines with a reason that appears as a skip:
+WebFinger on a domain-shaped handle or a freemail host, the username sweep
+on a role mailbox, XposedOrNot on an automated one.
+
+**Shared edges are not the target's.** `infra.shared_edge` holds Cloudflare's
+published ranges and Vercel's RDAP-confirmed blocks; `pivot_refusal` refuses
+them, and the IP module now runs `judge_host` itself. Measured on a
+Cloudflare-fronted domain: the old walk investigated two unrelated domains
+taken from Shodan's co-tenant list at reverse-DNS weight. Shodan hostnames
+are `passive-dns` evidence now, and none on shared infrastructure.
+
+**GPG keys are fingerprints** (`core/pgp.py`). The old code hashed the whole
+armoured file — and GitHub serves a *placeholder* block to every key-less
+account, so all of them shared one "key", the strongest link kind there is.
+
+**Subdomains:** nine keyless sources with per-source ok/empty/limited/failed,
+one normaliser (IDNA, label alphabet, dot-bounded scope, `_service` names
+apart), Amass-style wildcard detection at every parent level, and the list
+of sources behind each name.
+
+**Report hygiene.** `Name = search` came from `biography` reading the label
+`search: education` as "<person>: <attribute>"; search/dork modules and
+kind-prefixes can no longer name a person. Unverified username hits no
+longer count as `+ confirmed` in the accounts table. A module failing on
+several pivots is one line naming them.
+
+**New free sources:** XposedOrNot (breach names/years/data kinds — never
+passwords), Gravatar v3 verified accounts, keys.openpgp.org verified keys,
+GitHub commits by `author-email`, DNS-filter reputation (Cloudflare malware
+filter + AdGuard; two must agree to call a domain flagged).
+
 ### The analytical layers
 
 Three modules that read what the collectors produced and say what it amounts

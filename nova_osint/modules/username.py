@@ -24,9 +24,11 @@ import random
 import re
 import string
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
+from ..core import sitedata
 from ..core.config import DEFAULT_CACHE
 from ..core.entities import EntityType
 from ..core.models import Confidence, ModuleStatus, ScanResult, Severity, TargetType
@@ -39,6 +41,10 @@ SHERLOCK_DATA_URL = (
 CORE_SITES = Path(__file__).resolve().parent.parent / "data" / "sites.json"
 SITES_CACHE = DEFAULT_CACHE / "sites.json"
 SITES_CACHE_TTL = 7 * 24 * 3600
+#: Share of answering sites above which a handle is too common to mean anyone.
+#: A distinctive handle - a person's real one - typically lands on 1-8% of a
+#: catalogue; "sales" landed on ~38%.
+GENERIC_SHARE = 0.25
 
 
 def load_sites(http: Any = None, refresh: bool = False) -> tuple[dict[str, dict], str]:
@@ -76,6 +82,26 @@ def load_sites(http: Any = None, refresh: bool = False) -> tuple[dict[str, dict]
 
     cleaned = _clean(json.loads(CORE_SITES.read_text("utf-8")))
     return cleaned, f"bundled core list ({len(cleaned)} sites)"
+
+
+def load_catalogue(http: Any = None, refresh: bool = False,
+                   max_rank: int = sitedata.DEFAULT_MAX_RANK
+                   ) -> tuple[dict[str, dict], str]:
+    """Sherlock's list, minus today's false-positive exclusions, sharpened and
+    widened by Maigret's ranked sites. See :mod:`nova_osint.core.sitedata`."""
+    sherlock, origin = load_sites(http, refresh=refresh)
+    try:
+        maigret = sitedata.maigret_sites(http, refresh=refresh, max_rank=max_rank)
+        excluded = sitedata.sherlock_exclusions(http, refresh=refresh)
+    except Exception:  # noqa: BLE001 - a catalogue that fails is a smaller catalogue
+        maigret, excluded = {}, set()
+    if not maigret and not excluded:
+        return sherlock, origin
+    merged, n = sitedata.merge(sherlock, maigret, excluded)
+    return merged, (f"{origin} + maigret: {len(merged)} sites "
+                    f"({n['upgraded']} upgraded to positive checks, "
+                    f"{n['maigret']} added, {n['excluded']} dropped as "
+                    f"known false positives)")
 
 
 def _clean(data: dict) -> dict[str, dict]:
@@ -122,6 +148,55 @@ def _control_for(meta: dict) -> str:
     return candidates[0]
 
 
+#: Markers of an interstitial - a page served *instead of* the one asked for.
+#: Matched against the title and the opening of the document only, and kept
+#: to phrases that only ever appear on such pages: "captcha" alone is not one,
+#: because ordinary profile pages load reCAPTCHA in their <head>.
+_INTERSTITIAL = (
+    "just a moment...", "attention required! | cloudflare",
+    "cf-browser-verification", "checking your browser before accessing",
+    "verify you are human", "verifying you are human", "ddos-guard",
+    "px-captcha", "please verify you are a human", "are you a robot",
+    "too many requests", "rate limit exceeded", "access denied",
+    "request unsuccessful. incapsula",
+)
+
+
+def _echoes(body: str, handle: str) -> bool:
+    """Does the page name the handle - plainly, case-folded or URL-encoded?"""
+    if not body or not handle:
+        return False
+    low = body.casefold()
+    needle = handle.casefold()
+    return needle in low or urllib.parse.quote(needle).casefold() in low
+
+
+def _refusal(resp: Any, meta: dict) -> str:
+    """Why this answer is a refusal rather than a lookup, or "" if it is one.
+
+    Status codes the site itself documents as its "no such user" answer
+    (``errorCode``) are answers, whatever they are numerically.
+    """
+    bad = meta.get("errorCode")
+    documented = {bad} if isinstance(bad, int) else set(bad or [])
+    status = resp.status
+    if status in documented:
+        return ""
+    if status == 429:
+        return "rate limited"
+    if status >= 500:
+        return f"server error {status}"
+    headers = {k.lower(): str(v).lower() for k, v in (resp.headers or {}).items()}
+    if headers.get("cf-mitigated") == "challenge":
+        return "bot challenge"
+    if status in (401, 403, 407, 451):
+        return f"refused ({status})"
+    head = resp.text[:3000].lower() if resp.body else ""
+    if any(marker in head for marker in _INTERSTITIAL):
+        return "bot challenge or block page"
+    return ""
+
+
 @register
 class UsernameModule(Module):
     name = "username"
@@ -131,10 +206,23 @@ class UsernameModule(Module):
     active = False  # third-party public profile pages, not the target's own infra
     slow = True
 
+    def refuses(self, target: str) -> str | None:
+        if "@" in target:
+            from ..core.addresses import judge_address
+
+            verdict = judge_address(target)
+            if verdict.kind != "personal":
+                return (f"{verdict.kind} mailbox - its local part is not a "
+                        f"person's handle")
+        return None
+
     def run(self, target: str, result: ScanResult) -> None:
         handle = target.split("@")[0] if "@" in target else target
         refresh = bool(self.config.option("refresh_sites", False))
-        sites, origin = load_sites(self.http, refresh=refresh)
+        max_rank = int(self.config.option("maigret_max_rank",
+                                          sitedata.DEFAULT_MAX_RANK) or 0)
+        sites, origin = load_catalogue(self.http, refresh=refresh,
+                                       max_rank=max_rank)
         if not sites:
             result.error("no site database available")
             return
@@ -155,6 +243,29 @@ class UsernameModule(Module):
 
         if self.config.option("verify_hits", False) and found:
             found = self._verify(found, sites)
+
+        # A handle that "exists" on a large share of the sites that answered
+        # is a common word or name, held by a different stranger on each.
+        # Measured rather than listed, so it catches "max" and "dragon" as
+        # well as "sales". Every hit is demoted to a lead, none pivots.
+        answered_n = sum(1 for h in hits if h and h["outcome"] == "answered")
+        generic = (answered_n >= 40 and len(found) / answered_n >= GENERIC_SHARE)
+        if generic:
+            for hit in found:
+                hit["confidence"] = Confidence.POSSIBLE
+                hit["verified"] = False
+                hit["unverified_reason"] = (
+                    "common handle - held on most sites, almost certainly "
+                    "by different people")
+            result.add(
+                "generic handle",
+                f"'{handle}' exists on {len(found)} of {answered_n} sites that "
+                f"answered ({len(found) / answered_n:.0%}). A handle that "
+                f"common names nobody in particular; every hit below is a "
+                f"lead at best",
+                source="analysis", confidence=Confidence.LIKELY,
+                severity=Severity.NOTABLE,
+            )
 
         for hit in sorted(found, key=lambda h: h["site"].lower()):
             if hit.get("nsfw") and not self.config.option("include_nsfw", False):
@@ -179,7 +290,20 @@ class UsernameModule(Module):
         # as a network failure made every scan of a short handle look broken.
         answered = [h for h in hits if h and h["outcome"] == "answered"]
         not_applicable = [h for h in hits if h and h["outcome"] == "not-applicable"]
+        refused = [h for h in hits if h and h["outcome"] == "refused"]
         unreachable = len(items) - len(answered) - len(not_applicable)
+        if refused:
+            reasons: dict[str, int] = {}
+            for h in refused:
+                reasons[h["refusal"]] = reasons.get(h["refusal"], 0) + 1
+            result.add(
+                "sites that refused the lookup",
+                f"{len(refused)} - a block page or rate limit is not an answer, "
+                f"so these say nothing either way",
+                source="username",
+                extra={"reasons": reasons,
+                       "sites": sorted(h["site"] for h in refused)[:60]},
+            )
 
         result.add(
             "coverage",
@@ -267,6 +391,8 @@ class UsernameModule(Module):
                 method = "POST"
 
         err_type = meta["errorType"]
+        if isinstance(err_type, list):  # newer Sherlock entries combine checks
+            err_type = err_type[0] if err_type else "status_code"
         resp = self.http.get(
             probe,
             headers=headers,
@@ -277,6 +403,28 @@ class UsernameModule(Module):
         )
         if resp.status == 0:
             return None
+
+        # A refusal is not an answer. A rate-limit page, a WAF block or a
+        # Cloudflare "just a moment" interstitial carries none of the site's
+        # "no such user" text, so a ``message`` site read it as a profile and
+        # a 403 on a ``status_code`` site read as "no account". Both are
+        # wrong in the same way: the site never looked the handle up.
+        refusal = _refusal(resp, meta)
+        if refusal:
+            return {"site": site, "outcome": "refused", "claimed": False,
+                    "status": resp.status, "refusal": refusal}
+
+        body = resp.text if resp.body else ""
+        # The site's own catalogue of block pages (Maigret's ``errors``).
+        for marker, reason in (meta.get("errors") or {}).items():
+            if marker and marker in body:
+                return {"site": site, "outcome": "refused", "claimed": False,
+                        "status": resp.status, "refusal": str(reason)[:80]}
+
+        presence = meta.get("presenseStrs") or []
+        positive = None  # None: the site defines no positive marker
+        if presence:
+            positive = any(p in body for p in presence)
 
         claimed = False
         confidence = Confidence.LIKELY
@@ -289,11 +437,13 @@ class UsernameModule(Module):
             msgs = meta.get("errorMsg") or []
             if isinstance(msgs, str):
                 msgs = [msgs]
-            body = resp.text
-            claimed = resp.status < 500 and not any(m in body for m in msgs)
+            # Maigret's rule: present AND not absent. Absent-only is what a
+            # login wall, a consent page or a redesigned 404 also satisfy.
+            claimed = (resp.status < 500 and not any(m in body for m in msgs)
+                       and positive is not False)
             confidence = Confidence.LIKELY if resp.ok else Confidence.POSSIBLE
         elif err_type == "response_url":
-            claimed = 200 <= resp.status < 300
+            claimed = 200 <= resp.status < 300 and positive is not False
             confidence = Confidence.LIKELY
 
         return {
@@ -307,6 +457,11 @@ class UsernameModule(Module):
             "confidence": confidence,
             "nsfw": bool(meta.get("isNSFW")),
             "meta": meta,
+            # Positive evidence: the site's own "this is a profile" marker,
+            # or failing that, the handle itself on the page (SpiderFoot's
+            # ``musthavename``). A status code alone is neither.
+            "positive": bool(positive) or _echoes(body, handle),
+            "catalogue": meta.get("source", "sherlock"),
         }
 
     def _verify(self, hits: list[dict], sites: dict[str, dict]) -> list[dict]:
@@ -343,8 +498,17 @@ class UsernameModule(Module):
             if tested and ctrl["claimed"]:
                 continue  # site claims everything - useless signal
             if tested:
-                hit["confidence"] = Confidence.CONFIRMED
                 hit["verified"] = True
+                if hit.get("positive", True):
+                    hit["confidence"] = Confidence.CONFIRMED
+                else:
+                    # The site tells the two handles apart, but nothing on
+                    # the page names this one: a status code and nothing
+                    # else. Real, probably - but not shown.
+                    hit["confidence"] = Confidence.LIKELY
+                    hit["unverified_reason"] = (
+                        "the site rejected a made-up handle, but the page "
+                        "never shows this one")
             else:
                 # Keep it, say so, and do not pretend it was checked.
                 hit["verified"] = False

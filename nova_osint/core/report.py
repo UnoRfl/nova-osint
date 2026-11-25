@@ -67,12 +67,16 @@ def status_rows(inv: Investigation) -> list[tuple[str, str, str]]:
     Skipped modules are included: "we never asked" is as important to an
     investigator as "we asked and got nothing".
     """
-    rows = [
-        (r.module, r.status.value, r.status_reason)
+    # A module run on a pivot is named with what it ran on, and identical rows
+    # collapse: one module failing on three handles printed three rows that
+    # all said "username", and a skip recorded once per pivot repeated too.
+    rows = {
+        (r.module if str(r.target) == str(inv.target) else f"{r.module} ({r.target})",
+         r.status.value, r.status_reason)
         for r in inv.results
         if not r.status.is_complete
-    ]
-    rows += [(name, ModuleStatus.SKIPPED.value, reason) for name, reason in inv.skipped]
+    }
+    rows |= {(name, ModuleStatus.SKIPPED.value, reason) for name, reason in inv.skipped}
     return sorted(rows)
 
 

@@ -36,8 +36,28 @@ def _inv(target="alice", rows=(), ttype=TargetType.USERNAME):
             res = ScanResult(module=module, target=target, target_type=ttype)
             by_module[module] = res
             inv.results.append(res)
-        res.add(label, value, source=source, url=url, severity=Severity.NOTABLE)
+        if module == "username":
+            # What the real module emits for a hit that passed verification.
+            res.add(label, value, source=source, url=url, severity=Severity.NOTABLE,
+                    confidence=Confidence.CONFIRMED, extra={"verified": True})
+        else:
+            res.add(label, value, source=source, url=url, severity=Severity.NOTABLE)
     return inv.finish()
+
+
+def test_an_unverified_username_hit_is_not_counted_as_confirmed():
+    """The "+ verified" column used to include every username hit not marked
+    POSSIBLE - so hits whose control probe timed out were counted as
+    verified, inflating exactly the number a reader trusts most."""
+    inv = Investigation(target="alice", target_type=TargetType.USERNAME)
+    res = ScanResult(module="username", target="alice",
+                     target_type=TargetType.USERNAME)
+    res.add("Instagram", "https://instagram.com/alice", source="username",
+            url="https://instagram.com/alice", confidence=Confidence.LIKELY,
+            extra={"verified": False})
+    inv.results.append(res)
+    row = next(a for a in collect(inv.finish()) if a.platform == "Instagram")
+    assert row.basis == "possible"
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +154,7 @@ def test_the_legend_explains_every_mark_it_uses():
     text = render_text(collect(inv))
     for mark in ("+", "~", "?"):
         assert mark in text
-    assert "verified by a lookup" in text and "open by hand" in text
+    assert "account exists (checked)" in text and "open by hand" in text
 
 
 # ---------------------------------------------------------------------------

@@ -227,15 +227,35 @@ class KeyModule(Module):
         if not count:
             result.add("SSH keys", "account exists, no public keys", source="github")
 
+        # GitHub answers *every* account with an armoured block - for one with
+        # no key it is a placeholder ("This user hasn't uploaded any GPG
+        # keys") that contains no packets. Hashing the whole file gave every
+        # key-less account the same "key", and a shared key is the strongest
+        # evidence this tool has: two strangers could be welded together. A
+        # key is now its real fingerprint, from the public-key packet, which
+        # is also what a keyserver copy of the same key hashes to.
+        from ..core.pgp import parse_keys
+
         gpg = self.http.get(f"https://github.com/{target}.gpg", timeout=15)
-        if gpg.ok and "BEGIN PGP PUBLIC KEY" in gpg.text:
-            digest = hashlib.sha256(gpg.body).hexdigest()
-            result.add("GPG key published", f"sha256:{digest[:24]}", source="github",
-                       url=f"https://github.com/{target}.gpg",
-                       severity=Severity.NOTABLE)
-            result.entity(EntityType.KEY, f"gpg/{digest}", relation="holds-key",
-                          evidence="key-fingerprint-shared",
-                          url=f"https://github.com/{target}.gpg")
+        keys = parse_keys(gpg.text) if gpg.ok else []
+        url = f"https://github.com/{target}.gpg"
+        for key in keys[:5]:
+            result.add("GPG key published", key.fingerprint, source="github",
+                       url=url, severity=Severity.NOTABLE,
+                       extra={"key_id": key.key_id, "subkeys": len(key.subkeys)})
+            result.entity(EntityType.KEY, f"gpg/{key.fingerprint}", relation="holds-key",
+                          evidence="key-fingerprint-shared", url=url,
+                          detail="OpenPGP fingerprint of a key published on GitHub")
+            for email in key.emails[:5]:
+                # A UID is the key holder's own claim; GitHub does not check it.
+                result.add("address in GPG key", email, source="github", url=url,
+                           severity=Severity.NOTABLE,
+                           extra={"basis": "claimed by the key holder in a UID"})
+                result.entity(EntityType.EMAIL, email, relation="key-uid",
+                              evidence="key-uid", url=url,
+                              detail="address in a UID of this account's GPG key")
+        if gpg.ok and not keys:
+            result.add("GPG keys", "none published", source="github")
 
 
 def _ssh_fingerprint(b64: str) -> str:
@@ -405,6 +425,28 @@ class WebFingerModule(Module):
     #: short, named, and the absence of a hit is reported as "these instances",
     #: never as "no fediverse account".
     INSTANCES = ("mastodon.social", "fosstodon.org", "hachyderm.io", "infosec.exchange")
+
+    def refuses(self, target: str) -> str | None:
+        """WebFinger answers about ``user@host`` on a host that speaks it.
+
+        A domain-shaped "handle" (designsbyracquel.com) cannot be a Mastodon
+        username - those are letters, digits and underscores - and a
+        freemail host (gmail.com) runs no WebFinger at all. Asking either
+        produces a "not found" that reads like a negative finding.
+        """
+        if "@" in target:
+            from ..core.addresses import judge_address
+            from .email import FREEMAIL
+
+            host = target.rpartition("@")[2].lower()
+            if host in FREEMAIL:
+                return f"{host} does not run WebFinger"
+            if judge_address(target).kind != "personal":
+                return "not a personal address"
+            return None
+        if not re.fullmatch(r"[A-Za-z0-9_]{1,30}", target.lstrip("@")):
+            return "not a shape a fediverse username can take"
+        return None
 
     def run(self, target: str, result: ScanResult) -> None:
         if "@" in target:

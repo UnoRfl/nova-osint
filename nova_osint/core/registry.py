@@ -113,6 +113,16 @@ class Module:
         # CLI can print that same reason.
         return self.skip_reason() is None
 
+    def refuses(self, target: str) -> str | None:
+        """Why this module cannot say anything about *this* value, or None.
+
+        ``accepts`` is about the target's type; this is about the value. A
+        domain-shaped "username" is a legal USERNAME and still not something a
+        Mastodon server can hold. A module that cannot answer must not be
+        asked, because a "not found" from it reads like a negative finding.
+        """
+        return None
+
     def skip_reason(self) -> str | None:
         if self.requires_key and not self.config.has(self.requires_key):
             from .config import KEY_ENV

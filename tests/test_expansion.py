@@ -59,7 +59,7 @@ class DomainToEmail(Module):
 
     def run(self, target: str, result: ScanResult) -> None:
         result.add("registrar", "Test Registrar", source="fake")
-        result.entity(EntityType.EMAIL, f"admin@{target}", relation="contact",
+        result.entity(EntityType.EMAIL, f"lovelace@{target}", relation="contact",
                       evidence="rdap-contact", url="https://rdap.test/x")
 
 
@@ -162,7 +162,7 @@ def test_a_plain_scan_still_builds_a_graph(registry_of):
     with _engine() as e:
         inv = e.scan("example.com")
     assert inv.graph is not None and len(inv.graph) == 2
-    assert "email:admin@example.com" in inv.graph.nodes
+    assert "email:lovelace@example.com" in inv.graph.nodes
     assert inv.graph.nodes[inv.graph.seed].score == 1.0
 
 
@@ -171,10 +171,10 @@ def test_expansion_walks_two_hops_along_the_evidence(registry_of):
     with _engine() as e:
         inv = e.investigate("example.com", budget=Budget(max_depth=3))
     eids = set(inv.graph.nodes)
-    assert eids == {"domain:example.com", "email:admin@example.com", "username:admin"}
-    assert inv.graph.nodes["username:admin"].depth == 2
+    assert eids == {"domain:example.com", "email:lovelace@example.com", "username:lovelace"}
+    assert inv.graph.nodes["username:lovelace"].depth == 2
     # ...and the leaf module actually ran against the handle it discovered.
-    assert any(r.module == "fake-username" and r.target == "admin" for r in inv.results)
+    assert any(r.module == "fake-username" and r.target == "lovelace" for r in inv.results)
     assert any(f.label == "profile" for f in inv.findings)
 
 
@@ -182,7 +182,7 @@ def test_edges_carry_the_evidence_the_module_declared(registry_of):
     registry_of(DomainToEmail, EmailToUsername, UsernameLeaf)
     with _engine() as e:
         inv = e.investigate("example.com")
-    edge = next(iter(inv.graph.between("domain:example.com", "email:admin@example.com")))
+    edge = next(iter(inv.graph.between("domain:example.com", "email:lovelace@example.com")))
     assert edge.observations[0].kind == "rdap-contact"
     assert edge.observations[0].url == "https://rdap.test/x"
     assert edge.llr == pytest.approx(EVIDENCE["rdap-contact"])
@@ -215,7 +215,7 @@ def test_a_module_that_raises_mid_walk_does_not_stop_it(registry_of):
         inv = e.investigate("example.com", budget=Budget(max_depth=3))
     statuses = {(r.module, r.status) for r in inv.results}
     assert ("fake-broken", ModuleStatus.FAILED) in statuses
-    assert "username:admin" in inv.graph.nodes, "the walk continued past the failure"
+    assert "username:lovelace" in inv.graph.nodes, "the walk continued past the failure"
 
 
 def test_shared_hosting_fanout_is_recorded_but_never_expanded(registry_of):
@@ -258,8 +258,8 @@ def test_depth_limit_bounds_the_walk(registry_of):
     registry_of(DomainToEmail, EmailToUsername, UsernameLeaf)
     with _engine() as e:
         inv = e.investigate("example.com", budget=Budget(max_depth=1))
-    assert "username:admin" in inv.graph.nodes, "still discovered..."
-    assert not any(r.target == "admin" for r in inv.results), "...but never scanned"
+    assert "username:lovelace" in inv.graph.nodes, "still discovered..."
+    assert not any(r.target == "lovelace" for r in inv.results), "...but never scanned"
 
 
 def test_truncated_walks_name_what_they_did_not_reach(registry_of):

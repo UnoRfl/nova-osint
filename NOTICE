@@ -3,8 +3,15 @@ NOVA bundles and fetches data from other open-source projects.
 sherlock-project/sherlock (MIT License)
   The username site database follows Sherlock's data.json schema, and
   `--refresh-sites` downloads their maintained catalogue directly. The curated
-  list in nova_osint/data/sites.json is derived from that file.
+  list in nova_osint/data/sites.json is derived from that file. Sherlock's
+  daily false-positive exclusion list is fetched at runtime and honoured.
   https://github.com/sherlock-project/sherlock
+
+soxoj/maigret (MIT License, Copyright 2020-2026 Soxoj)
+  Maigret's site database is fetched at runtime (never bundled). Its ranked,
+  enabled sites widen the username catalogue, and its presence/absence/error
+  strings replace Sherlock's check where both projects know a site.
+  https://github.com/soxoj/maigret
 
 disposable-email-domains/disposable-email-domains (MIT License)
   The throwaway-mail blocklist is fetched from this project at runtime and
@@ -12,6 +19,13 @@ disposable-email-domains/disposable-email-domains (MIT License)
   https://github.com/disposable-email-domains/disposable-email-domains
 
 Public services queried at runtime, each under its own terms:
-  rdap.org, Cloudflare DNS, Google Public DNS, crt.sh, SSLMate CertSpotter,
-  HackerTarget, RapidDNS, Have I Been Pwned, Shodan InternetDB, ip-api.com,
+  rdap.org, Cloudflare DNS (including its malware-filtering resolver),
+  AdGuard DNS, Google Public DNS, crt.sh, SSLMate CertSpotter, crt.name,
+  Shodan CT and InternetDB, ip.thc.org, AnubisDB, HackerTarget, RapidDNS,
+  urlscan.io, Have I Been Pwned, XposedOrNot, keys.openpgp.org, ip-api.com,
   the Internet Archive, Gravatar and the GitHub REST API.
+
+Methods learned from (ideas only, no code copied): SpiderFoot (MIT),
+WhatsMyName (CC BY-SA 4.0; its data is not used), theHarvester (GPL-2.0),
+OWASP Amass (Apache-2.0), subfinder (MIT), Holehe (GPL-3.0), PhoneInfoga
+(GPL-3.0) and OpenOSINT (MIT).

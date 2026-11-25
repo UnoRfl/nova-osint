@@ -162,6 +162,17 @@ class Attribute:
 # ---------------------------------------------------------------------------
 
 
+#: Modules whose findings are about queries and links, never about a person.
+_NOT_IDENTITY_SOURCES = frozenset({"websearch", "dorks"})
+
+#: Label prefixes modules use to say what *kind* of finding it is. Read as
+#: "<who>: <attribute>" they would invent a person per prefix.
+_SYSTEM_PREFIXES = frozenset({
+    "search", "verified", "linked", "github code", "check manually", "source",
+    "sources", "site", "gravatar", "dmarc", "spf", "dkim", "mx", "dns",
+})
+
+
 def extract(inv: Investigation) -> list[Subject]:
     """Biographical attributes, one block per person, most important first.
 
@@ -183,11 +194,21 @@ def extract(inv: Investigation) -> list[Subject]:
     #: source would put a real module's name against a fact it never reported.
     named_by: dict[str, list[str]] = {}
     for result in inv.results:
+        # Search engines and generated dorks describe *queries*, not people.
+        # A websearch finding is labelled "search: <category>", and with the
+        # category "education" the engine itself was read as a candidate
+        # called "search" - the report printed "Name = search".
+        if result.module in _NOT_IDENTITY_SOURCES:
+            continue
         for finding in result.findings:
             label = str(finding.label)
             who, _, rest = label.partition(": ")
             if not rest:
                 # No prefix: the fact is about whoever was scanned.
+                who, rest = "", label
+            elif who.strip().casefold() in _SYSTEM_PREFIXES:
+                # "verified: GitHub", "linked: x" - a kind of finding, not a
+                # person; the fact is about whoever was scanned.
                 who, rest = "", label
             elif result.module not in named_by.setdefault(who, []):
                 named_by[who].append(result.module)

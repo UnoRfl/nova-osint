@@ -29,6 +29,7 @@ network work itself.
 from __future__ import annotations
 
 import collections
+import re
 import threading
 import time
 import urllib.parse
@@ -220,6 +221,58 @@ def pivot_refusal(target: str, ttype: TargetType) -> str:
         verdict = judge_address(target)
         if not verdict.expandable:
             return verdict.reason
+    if ttype is TargetType.USERNAME:
+        return generic_handle(target)
+    if ttype is TargetType.DOMAIN:
+        from ..modules.email import FREEMAIL
+
+        host = str(target).strip().lower().rstrip(".")
+        if host in FREEMAIL or host in _MAIL_PROVIDERS:
+            # The domain half of someone@gmail.com is Google's, not theirs:
+            # its DNS, DMARC and certificates describe a billion mailboxes.
+            return f"{host} is a mail provider shared by its users, not the subject's domain"
+    if ttype is TargetType.IP:
+        from .infra import shared_edge
+
+        if owner := shared_edge(target):
+            return (f"{target} is a {owner} edge address shared by thousands of "
+                    f"sites; following it investigates {owner}'s other customers")
+    return ""
+
+
+#: Domains whose mail half is a provider's, beyond the freemail list: the
+#: corporate parents those addresses report DMARC to, and big ISPs.
+_MAIL_PROVIDERS = frozenset({
+    "google.com", "microsoft.com", "yahoo.co.uk", "yahoo.co.jp", "ymail.com",
+    "rocketmail.com", "outlook.co.uk", "hotmail.co.uk", "live.co.uk", "qq.com",
+    "163.com", "126.com", "naver.com", "daum.net", "mail.ru", "inbox.ru",
+    "bk.ru", "list.ru", "web.de", "t-online.de", "orange.fr", "free.fr",
+    "laposte.net", "libero.it", "comcast.net", "verizon.net", "att.net",
+    "sbcglobal.net", "btinternet.com", "proton.ch", "tuta.io", "tutanota.de",
+})
+
+
+def generic_handle(handle: str) -> str:
+    """Why this handle names nobody in particular, or ``""``.
+
+    A lead is only worth a sweep if a hit could be *the subject's*. "sales",
+    "admin", "max" and "42" are held by a different stranger on every site,
+    so every "account found" is noise that reads like signal. This is the
+    cheap static test for derived leads; the username module also measures
+    the same thing at run time from the hit rate.
+    """
+    from .addresses import AUTOMATED_LOCALPARTS, ROLE_LOCALPARTS
+
+    h = str(handle or "").strip().lower().lstrip("@")
+    if "@" in h or "." in h:  # fediverse / domain-shaped handles are specific
+        return ""
+    core = re.sub(r"[._-]", "", h)
+    if len(core) < 4:
+        return f"'{h}' is too short to belong to one person"
+    if core.isdigit():
+        return f"'{h}' is a number, not a handle"
+    if h in ROLE_LOCALPARTS or h in AUTOMATED_LOCALPARTS:
+        return f"'{h}' is a role word, not a person's handle"
     return ""
 
 
@@ -366,7 +419,7 @@ class Engine:
                 skipped.append((cls.name, "disabled in config.json"))
                 continue
             inst = cls(self.http, self.config)
-            reason = inst.skip_reason()
+            reason = inst.skip_reason() or inst.refuses(target)
             if reason:
                 skipped.append((cls.name, reason))
             else:
@@ -647,10 +700,15 @@ class Engine:
                     break
                 results = self._expand_one(ent, only, exclude, done, inv, on_result)
                 expansion.module_runs += len(results)
-                expansion.expanded.append(ent.eid)
                 node = graph.nodes.get(ent.eid)
                 if node is not None:
-                    node.expanded = True
+                    node.expanded = True  # visited either way; never re-queued
+                # A lead the gate refused was visited, not expanded. Listing
+                # it under "expanded" told the reader a Cloudflare edge and a
+                # DMARC robot had been investigated when nothing ran on them.
+                if any(e == ent.eid for e, _ in inv.not_followed):
+                    continue
+                expansion.expanded.append(ent.eid)
                 for res in results:
                     self.merge(graph, res)
             if expansion.stopped_by != "frontier exhausted":

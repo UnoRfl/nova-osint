@@ -191,10 +191,20 @@ def _headline(res: Any, leader: Any, runner: Any, confidence: str) -> str:
 
 def _coverage(inv: Investigation) -> list[str]:
     """Sources that did not finish, phrased as what it cost you."""
-    out = []
+    # One line per *module*, naming what it was run on. The same module run
+    # against three pivots used to print three identical sentences, which
+    # read as one failure reported three times rather than three lookups.
+    grouped: dict[str, list[Any]] = {}
     for res in inv.incomplete:
-        reason = res.errors[0] if res.errors else res.status.value
-        out.append(f"{res.module} did not finish ({reason}), so anything only "
+        grouped.setdefault(res.module, []).append(res)
+    out = []
+    for module, runs in grouped.items():
+        reason = next((r.errors[0] for r in runs if r.errors), runs[0].status.value)
+        targets = sorted({str(r.target) for r in runs})
+        on = (f" on {targets[0]}" if len(targets) == 1 else
+              f" on {len(targets)} targets ({', '.join(targets[:3])}"
+              f"{', ...' if len(targets) > 3 else ''})")
+        out.append(f"{module} did not finish{on} ({reason}), so anything only "
                    f"it could have found is missing")
     return out[:4]
 

@@ -75,6 +75,9 @@ AUTOMATED_LOCALPARTS = frozenset({
     "postmaster-noreply", "notification", "notifications", "automated",
     "autoreply", "auto-reply", "robot", "bot", "daemon", "cron", "system",
     "nobody", "devnull", "null", "noreply-dmarc", "dmarc", "dmarcreports",
+    # Report sinks named in DMARC/TLS-RPT records (Google: mailauth-reports@).
+    "mailauth-reports", "dmarc-reports", "dmarc_reports", "tls-reports",
+    "tlsrpt", "tls-rpt", "smtp-tls-reports", "rua", "ruf",
 })
 
 #: Addresses a platform generates on a user's behalf, or signs its own
@@ -98,7 +101,11 @@ _PLATFORM_AUTOMATED = (
 
 #: Hosts that exist only to receive machine mail.
 _AUTOMATED_HOSTS = re.compile(
-    r"(?:^|\.)(?:noreply|no-reply|donotreply|bounces?|mailer)\.", re.I)
+    # ``dmarc.`` / ``rua.`` hosts are report processors (Postmark, dmarcian,
+    # Valimail, URIports...): the address in a DMARC record belongs to the
+    # vendor, and following it investigates the vendor.
+    r"(?:^|\.)(?:noreply|no-reply|donotreply|bounces?|mailer|dmarc|rua|ruf"
+    r"|dmarc-reports?|reports?\.dmarc)\.", re.I)
 
 
 @dataclass(frozen=True)

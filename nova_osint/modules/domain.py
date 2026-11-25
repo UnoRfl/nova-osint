@@ -336,138 +336,414 @@ def _under(name: str, domain: str) -> bool:
     return bool(name) and (name == domain or name.endswith("." + domain))
 
 
+#: Labels: letters, digits, hyphens - and a leading underscore for service
+#: records (``_dmarc``, ``_domainkey``), which are names but not hosts.
+_LABEL = re.compile(r"^_?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+_IPV4 = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+
+
+def normalise_host(name: str, domain: str) -> str:
+    """One normaliser for every source, or ``""`` if the name is unusable.
+
+    Strip, drop the trailing dot, lowercase, drop ``*.``/``•.`` prefixes,
+    IDNA-encode, refuse IPs, enforce 253/63 lengths and the label alphabet,
+    and keep only the domain itself or a dot-bounded name under it.
+    """
+    n = str(name or "").strip().lower().rstrip(".")
+    while n.startswith(("*.", "•.", "•")):
+        n = n[2:] if n.startswith(("*.", "•.")) else n[1:]
+    if not n or _IPV4.match(n):
+        return ""
+    try:
+        n = n.encode("idna").decode("ascii")
+    except UnicodeError:
+        return ""
+    if len(n) > 253 or not _under(n, domain):
+        return ""
+    if not all(_LABEL.match(label) for label in n.split(".")):
+        return ""
+    return n
+
+
 @register
 class SubdomainModule(Module):
+    """Subdomains from nine free, keyless sources, then checked against DNS.
+
+    Three rules from subfinder/Amass/theHarvester that this used to lack:
+
+    * **A source that failed is not a source that found nothing.** crt.sh
+      spends much of 2026 answering 502; HackerTarget answers *200* with "API
+      count exceeded". Each source now reports ok / empty / limited / failed.
+    * **Wildcard DNS makes every name "live".** Before calling anything live,
+      three random labels are resolved at the apex and at each parent level a
+      candidate sits under; a name whose answers fall inside that wildcard
+      set is "wildcard-only", not live.
+    * **One source is a lead; several are a corroboration.** Each name
+      carries the list of sources that reported it.
+    """
+
     name = "subdomains"
     title = "Subdomain discovery"
     description = "Certificate transparency plus passive DNS, optionally resolved."
     accepts = frozenset({TargetType.DOMAIN, TargetType.URL})
     slow = True
 
+    SOURCES = ("crt.sh", "certspotter", "crt.name", "shodan-ct", "thc",
+               "anubis", "hackertarget", "rapiddns", "urlscan")
+
     def run(self, target: str, result: ScanResult) -> None:
         domain = hostname_of(target)
-        sources = {
-            "crt.sh": self._crtsh,
-            "certspotter": self._certspotter,
-            "hackertarget": self._hackertarget,
-            "rapiddns": self._rapiddns,
-        }
-        gathered = self.http.map(lambda kv: (kv[0], kv[1](domain)), list(sources.items()))
+        fetchers = {src: getattr(self, "_" + src.replace(".", "").replace("-", ""))
+                    for src in self.SOURCES}
+        gathered = self.http.map(lambda kv: (kv[0], self._safe(kv[1], domain)),
+                                 list(fetchers.items()))
 
         names: dict[str, set[str]] = {}
+        status: dict[str, str] = {}
+        wildcard_certs: set[str] = set()
         for pair in gathered:
             if not pair:
                 continue
-            src, found = pair
-            if found is None:
-                result.error(f"{src} unavailable")
-                continue
-            result.add(f"source: {src}", f"{len(found)} name(s)", source=src)
-            for n in found:
-                names.setdefault(n, set()).add(src)
-
-        # Wildcard entries from CT are noise as hostnames but tell you a wildcard
-        # cert exists, which is worth its own line.
-        wildcards = sorted(n for n in names if n.startswith("*."))
-        hosts = sorted(n for n in names if not n.startswith("*.") and n != domain)
-        if wildcards:
-            result.add("wildcard certificates", wildcards, source="ct",
+            src, (state, found) = pair
+            status[src] = state
+            for raw in found:
+                n = normalise_host(raw, domain)
+                if n:
+                    names.setdefault(n, set()).add(src)
+                    # A wildcard certificate is not a host, but it is a fact
+                    # worth its own line: anything under it can be served.
+                    if str(raw).strip().startswith("*."):
+                        wildcard_certs.add("*." + n)
+        if wildcard_certs:
+            result.add("wildcard certificates", sorted(wildcard_certs), source="ct",
                        severity=Severity.NOTABLE)
+        answered = [s for s, st in status.items() if st in ("ok", "empty")]
+        failed = {s: status.get(s, "failed") for s in self.SOURCES
+                  if status.get(s, "failed") not in ("ok", "empty")}
+        result.add("sources", {s: status.get(s, "failed") for s in self.SOURCES},
+                   source="subdomains",
+                   extra={"answered": len(answered), "failed": failed})
+        if failed:
+            result.error("subdomain sources not answering: " + ", ".join(
+                f"{s} ({st})" for s, st in sorted(failed.items())))
+
+        services = sorted(n for n in names
+                          if any(lb.startswith("_") for lb in n.split(".")))
+        hosts = sorted(n for n in names if n != domain and n not in services)
+        if services:
+            result.add("service names (not hosts)", services[:50],
+                       source="ct+passivedns", extra={"count": len(services)})
         if not hosts:
-            result.add("subdomains", "none found", source="ct")
+            result.add("subdomains", "none found" if answered else
+                       "unknown - no source answered", source="ct+passivedns")
             return
+
+        sources_of = {h: sorted(names[h]) for h in hosts}
+        corroborated = [h for h in hosts if len(names[h]) >= 2]
 
         if self.config.passive_only:
             result.add(
-                "subdomains (unresolved)",
-                hosts,
-                source="ct+passivedns",
-                confidence=Confidence.POSSIBLE,
-                severity=Severity.NOTABLE,
-                extra={"count": len(hosts)},
-            )
+                "subdomains (unresolved)", hosts, source="ct+passivedns",
+                confidence=Confidence.POSSIBLE, severity=Severity.NOTABLE,
+                extra={"count": len(hosts), "corroborated": len(corroborated),
+                       "sources": {h: sources_of[h] for h in hosts[:200]}})
             return
 
         capped = hosts[: self.config.max_sites] if self.config.max_sites else hosts
-        live_flags = self.http.map(lambda h: (h, dnsmod.resolves(self.http, h)), capped)
-        live = sorted(h for pair in live_flags if pair for h, ok in [pair] if ok)
-        dead = [h for h in capped if h not in set(live)]
+        wild = self._wildcards(domain, capped)
+        if wild:
+            result.add("wildcard DNS", sorted(wild), source="dns",
+                       severity=Severity.NOTABLE,
+                       extra={"note": "random names resolve here, so a name "
+                                      "under these zones resolving proves nothing"})
+        answers = self.http.map(lambda h: (h, self._answers(h)), capped)
+        live: list[str] = []
+        wildcard_only: list[str] = []
+        dead: list[str] = []
+        for pair in answers:
+            if not pair:
+                continue
+            h, got = pair
+            if not got:
+                dead.append(h)
+                continue
+            zone_set = next((wild[z] for z in _parents(h, domain) if z in wild), None)
+            if zone_set is not None and got <= zone_set:
+                wildcard_only.append(h)
+            else:
+                live.append(h)
+        live.sort()
 
         result.add(
-            "live subdomains",
-            live,
-            source="ct+dns",
-            severity=Severity.NOTABLE,
-            extra={"count": len(live), "total_seen": len(hosts)},
-        )
+            "live subdomains", live, source="ct+dns", severity=Severity.NOTABLE,
+            extra={"count": len(live), "total_seen": len(hosts),
+                   "corroborated": len([h for h in live if len(names[h]) >= 2]),
+                   "sources": {h: sources_of[h] for h in live[:200]}})
+        if wildcard_only:
+            result.add("resolve only through the wildcard", sorted(wildcard_only),
+                       source="ct+dns", confidence=Confidence.POSSIBLE,
+                       extra={"count": len(wildcard_only)})
         if dead:
             # Historical names that no longer resolve are the takeover candidates.
-            result.add(
-                "historic (no A/AAAA)",
-                dead,
-                source="ct",
-                confidence=Confidence.POSSIBLE,
-                extra={"count": len(dead)},
-            )
+            result.add("historic (no A/AAAA)", sorted(dead), source="ct",
+                       confidence=Confidence.POSSIBLE, extra={"count": len(dead)})
         for h in live[:25]:
             result.entity(EntityType.DOMAIN, h, relation="subdomain-of",
-                          evidence="subdomain-of", detail="resolves")
+                          evidence="subdomain-of",
+                          detail=f"resolves; reported by {', '.join(sources_of[h])}")
 
-    # ------------------------------------------------------------------ sources
+    # ------------------------------------------------------------- wildcards
 
-    def _crtsh(self, domain: str) -> set[str] | None:
-        out: set[str] = set()
-        for q in (f"%.{domain}", domain):
-            resp = self.http.get(
-                f"https://crt.sh/?q={self._q(q)}&output=json", timeout=45
-            )
-            rows = resp.json()
-            if not isinstance(rows, list):
-                continue
-            for row in rows:
-                for name in str(row.get("name_value", "")).splitlines():
-                    if _under(name, domain):
-                        out.add(name.strip().lower().rstrip("."))
-        return out or None
+    def _answers(self, host: str) -> frozenset[str]:
+        got = set(dnsmod.resolve(self.http, host, "A"))
+        got |= set(dnsmod.resolve(self.http, host, "AAAA"))
+        return frozenset(a.rstrip(".").lower() for a in got)
 
-    def _certspotter(self, domain: str) -> set[str] | None:
-        url = (
-            "https://api.certspotter.com/v1/issuances"
-            f"?domain={domain}&include_subdomains=true&expand=dns_names"
-        )
-        rows = self.http.get(url, timeout=30).json()
-        if not isinstance(rows, list):
-            return None
-        out = set()
-        for row in rows:
-            for name in row.get("dns_names", []):
-                if _under(name, domain):
-                    out.add(str(name).strip().lower().rstrip("."))
+    def _wildcards(self, domain: str, hosts: list[str]) -> dict[str, frozenset[str]]:
+        """``{zone: answers}`` for every zone that answers random names.
+
+        Amass's method: every level between the apex and a candidate, three
+        random labels each. A round-robin wildcard hands out different
+        addresses per query, so the union of the three is the wildcard's set.
+        """
+        zones = {domain}
+        for h in hosts:
+            zones.update(_parents(h, domain))
+        chosen = sorted(zones, key=lambda z: (len(z), z))[:40]
+
+        def probe(zone: str) -> tuple[str, frozenset[str] | None]:
+            sets = [self._answers(f"{_rand_label()}.{zone}") for _ in range(3)]
+            if all(sets):
+                return zone, frozenset().union(*sets)
+            return zone, None
+
+        out: dict[str, frozenset[str]] = {}
+        for pair in self.http.map(probe, chosen):
+            if pair and pair[1]:
+                out[pair[0]] = pair[1]
         return out
 
-    def _hackertarget(self, domain: str) -> set[str] | None:
-        resp = self.http.get(f"https://api.hackertarget.com/hostsearch/?q={domain}")
-        if not resp.ok or "error" in resp.text.lower() or "API count exceeded" in resp.text:
-            return None
-        out = set()
-        for line in resp.text.splitlines():
-            host = line.split(",")[0].strip().lower()
-            if _under(host, domain):
-                out.add(host)
-        return out
+    # ---------------------------------------------------------------- sources
 
-    def _rapiddns(self, domain: str) -> set[str] | None:
-        resp = self.http.get(f"https://rapiddns.io/subdomain/{domain}?full=1", timeout=30)
+    @staticmethod
+    def _safe(fn, domain: str) -> tuple[str, set[str]]:  # type: ignore[no-untyped-def]
+        try:
+            got = fn(domain)
+        except Exception as exc:  # noqa: BLE001 - one source must not end the module
+            return f"failed ({type(exc).__name__})", set()
+        if isinstance(got, tuple):
+            return got
+        if got is None:
+            return "failed", set()
+        return ("ok" if got else "empty"), set(got)
+
+    @staticmethod
+    def _state(resp) -> str:  # type: ignore[no-untyped-def]
+        if resp.status == 429:
+            return "limited"
         if not resp.ok:
-            return None
-        out = {
-            m.lower()
-            for m in re.findall(rf"<td>([A-Za-z0-9_.-]+\.{re.escape(domain)})</td>", resp.text)
-        }
-        return out
+            return f"failed ({resp.status or resp.error or 'no answer'})"
+        return ""
+
+    def _crtsh(self, domain: str):  # type: ignore[no-untyped-def]
+        out: set[str] = set()
+        resp = self.http.get(f"https://crt.sh/?q={self._q('%.' + domain)}&output=json",
+                             timeout=45)
+        if bad := self._state(resp):
+            return bad, out
+        rows = resp.json()
+        if not isinstance(rows, list):
+            return "failed (not JSON)", out
+        for row in rows:
+            for name in str(row.get("name_value", "")).splitlines():
+                out.add(name)
+        return ("ok" if out else "empty"), out
+
+    def _certspotter(self, domain: str):  # type: ignore[no-untyped-def]
+        out: set[str] = set()
+        after = ""
+        for _page in range(5):
+            url = ("https://api.certspotter.com/v1/issuances"
+                   f"?domain={domain}&include_subdomains=true&expand=dns_names"
+                   + (f"&after={after}" if after else ""))
+            resp = self.http.get(url, timeout=30)
+            rows = resp.json()
+            if isinstance(rows, dict) and rows.get("code") == "rate_limited":
+                return ("ok" if out else "limited"), out
+            if bad := self._state(resp):
+                return ("ok" if out else bad), out
+            if not isinstance(rows, list) or not rows:
+                break
+            for row in rows:
+                out.update(str(n) for n in row.get("dns_names", []))
+            after = str(rows[-1].get("id", ""))
+            if len(rows) < 100 or not after:
+                break
+        return ("ok" if out else "empty"), out
+
+    def _crtname(self, domain: str):  # type: ignore[no-untyped-def]
+        resp = self.http.get(f"https://crt.name/v1/search?apex={domain}",
+                             headers={"Accept": "text/plain"}, timeout=30)
+        if bad := self._state(resp):
+            return bad, set()
+        out = {ln.strip() for ln in resp.text.splitlines() if ln.strip()}
+        return ("ok" if out else "empty"), out
+
+    def _shodanct(self, domain: str):  # type: ignore[no-untyped-def]
+        resp = self.http.get(f"https://ctl.shodan.io/api/v1/domain/{domain}/hostnames",
+                             timeout=30)
+        if resp.status == 404:
+            return "empty", set()
+        if bad := self._state(resp):
+            return bad, set()
+        data = resp.json()
+        out = {str(x) for x in data} if isinstance(data, list) else set()
+        return ("ok" if out else "empty"), out
+
+    def _thc(self, domain: str):  # type: ignore[no-untyped-def]
+        resp = self.http.get(
+            f"https://ip.thc.org/api/v1/subdomains/download?domain={domain}"
+            "&limit=5000&hide_header=true", timeout=30)
+        if bad := self._state(resp):
+            return bad, set()
+        out = {ln.strip().split(",")[0] for ln in resp.text.splitlines() if ln.strip()}
+        return ("ok" if out else "empty"), out
+
+    def _anubis(self, domain: str):  # type: ignore[no-untyped-def]
+        resp = self.http.get(f"https://anubisdb.com/anubis/subdomains/{domain}",
+                             timeout=30)
+        if resp.status == 404:
+            return "empty", set()
+        if bad := self._state(resp):
+            return bad, set()
+        data = resp.json()
+        out = {str(x) for x in data} if isinstance(data, list) else set()
+        return ("ok" if out else "empty"), out
+
+    def _hackertarget(self, domain: str):  # type: ignore[no-untyped-def]
+        resp = self.http.get(f"https://api.hackertarget.com/hostsearch/?q={domain}")
+        if bad := self._state(resp):
+            return bad, set()
+        text = resp.text
+        # Over quota it answers 200 with a sentence instead of data.
+        if "api count exceeded" in text.lower():
+            return "limited", set()
+        if text.lower().startswith("error"):
+            return ("empty" if "no records" in text.lower() else "failed"), set()
+        out = {ln.split(",")[0].strip() for ln in text.splitlines() if "," in ln}
+        return ("ok" if out else "empty"), out
+
+    def _rapiddns(self, domain: str):  # type: ignore[no-untyped-def]
+        resp = self.http.get(f"https://rapiddns.io/subdomain/{domain}?full=1", timeout=30)
+        if bad := self._state(resp):
+            return bad, set()
+        out = set(re.findall(rf"<td>([A-Za-z0-9_.-]+\.{re.escape(domain)})</td>",
+                             resp.text, flags=re.I))
+        return ("ok" if out else "empty"), out
+
+    def _urlscan(self, domain: str):  # type: ignore[no-untyped-def]
+        # ``page.domain:`` - plain ``domain:`` also matches every third-party
+        # host a page merely loaded something from.
+        resp = self.http.get(
+            f"https://urlscan.io/api/v1/search/?q=page.domain:{domain}&size=100",
+            timeout=30)
+        if bad := self._state(resp):
+            return bad, set()
+        data = resp.json()
+        rows = data.get("results", []) if isinstance(data, dict) else []
+        out = {str((r.get("page") or {}).get("domain")) for r in rows
+               if (r.get("page") or {}).get("domain")}
+        return ("ok" if out else "empty"), out
 
     @staticmethod
     def _q(value: str) -> str:
         import urllib.parse
 
         return urllib.parse.quote(value, safe="")
+
+
+def _parents(host: str, domain: str) -> list[str]:
+    """Zones strictly above ``host`` down to the apex, apex included."""
+    labels = host.split(".")
+    base = len(domain.split("."))
+    return [".".join(labels[i:]) for i in range(1, len(labels) - base + 1)]
+
+
+def _rand_label() -> str:
+    import random
+    import string
+
+    return "nova" + "".join(random.choice(string.ascii_lowercase + string.digits)
+                            for _ in range(14))
+
+
+#: Filtering resolvers that answer DNS-over-HTTPS JSON with no key. Each runs
+#: its own threat feed, so two of them blocking a name is two opinions.
+_FILTERS = (
+    ("Cloudflare malware filter",
+     "https://security.cloudflare-dns.com/dns-query?name={name}&type=A",
+     {"accept": "application/dns-json"}),
+    ("AdGuard DNS",
+     "https://dns.adguard-dns.com/resolve?name={name}&type=A", {}),
+)
+_SINKHOLES = frozenset({"0.0.0.0", "::", "94.140.14.35", "94.140.14.36"})
+
+
+@register
+class DnsFilterModule(Module):
+    """Is this domain on a security DNS filter's blocklist?
+
+    SpiderFoot's cheapest good idea: ask resolvers that refuse malicious
+    names, and compare with what an ordinary resolver says. A block from one
+    filter is one feed's opinion; it takes two to call a domain flagged. A
+    clean answer means "on neither blocklist", which is all it means.
+    """
+
+    name = "dnsfilter"
+    title = "DNS filter reputation"
+    description = "Whether security DNS filters block the domain (keyless)."
+    accepts = frozenset({TargetType.DOMAIN, TargetType.URL})
+
+    def run(self, target: str, result: ScanResult) -> None:
+        import urllib.parse
+
+        domain = hostname_of(target)
+        normal = dnsmod.resolve(self.http, domain, "A")
+        if not normal:
+            result.add("DNS filters", "not checked - the domain does not resolve",
+                       source="dnsfilter")
+            return
+
+        blocked: list[str] = []
+        answered = 0
+        for label, template, headers in _FILTERS:
+            resp = self.http.get(template.format(name=urllib.parse.quote(domain)),
+                                 headers=headers, timeout=10)
+            data = resp.json() if resp.ok else None
+            if not isinstance(data, dict):
+                continue
+            answered += 1
+            answers = {str(a.get("data", "")) for a in data.get("Answer") or []
+                       if a.get("type") == 1}
+            comment = " ".join(str(c) for c in data.get("Comment") or [])
+            if (data.get("Status") == 3 or answers & _SINKHOLES
+                    or "censored" in comment.lower() or "blocked" in comment.lower()):
+                blocked.append(label)
+
+        if not answered:
+            result.error("no DNS filter answered")
+            return
+        if len(blocked) >= 2:
+            result.add("DNS filter reputation", f"blocked by {', '.join(blocked)}",
+                       source="dnsfilter", severity=Severity.HIGH,
+                       confidence=Confidence.LIKELY,
+                       extra={"note": "independent threat feeds both list this domain"})
+        elif blocked:
+            result.add("DNS filter reputation", f"blocked by {blocked[0]} only",
+                       source="dnsfilter", severity=Severity.NOTABLE,
+                       confidence=Confidence.POSSIBLE,
+                       extra={"note": "one feed's opinion; the other resolves it normally"})
+        else:
+            result.add("DNS filter reputation",
+                       f"not blocked by the {answered} filter(s) asked",
+                       source="dnsfilter")

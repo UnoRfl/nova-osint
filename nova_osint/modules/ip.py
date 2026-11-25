@@ -11,6 +11,7 @@ import ipaddress
 
 from ..core import dns as dnsmod
 from ..core.entities import EntityType
+from ..core.infra import judge_host, shared_edge
 from ..core.models import Confidence, ScanResult, Severity, TargetType
 from ..core.registry import Module, register
 
@@ -21,6 +22,7 @@ class IpModule(Module):
     title = "IP geolocation and network"
     description = "Geo, ASN, hosting provider, reverse DNS, proxy/VPN flags."
     accepts = frozenset({TargetType.IP})
+    _shared = False
 
     def run(self, target: str, result: ScanResult) -> None:
         try:
@@ -60,12 +62,34 @@ class IpModule(Module):
             result.error("ip-api lookup failed")
 
         ptr = dnsmod.resolve(self.http, _reverse_name(addr), "PTR")
-        if ptr:
-            names = sorted({p.rstrip(".") for p in ptr})
+        names = sorted({p.rstrip(".") for p in ptr}) if ptr else []
+
+        # Is this address the target's, or a provider's edge that a thousand
+        # strangers share? Decided *before* any name found here becomes a
+        # lead. This module used to skip the question entirely, and on a
+        # Cloudflare-fronted site it turned Shodan's list of co-tenants into
+        # "hosted-name" entities - two unrelated domains were then
+        # investigated as though they were the target's.
+        owner = ""
+        if isinstance(data, dict):
+            owner = " ".join(str(data.get(k) or "") for k in ("as", "org", "isp"))
+        verdict = judge_host(as_owner=owner, ptr=names[0] if names else "")
+        edge = shared_edge(target)
+        self._shared = bool(verdict.shared or edge)
+        if self._shared:
+            result.add("shared infrastructure",
+                       verdict.reason or f"{edge} edge address",
+                       source="analysis", confidence=Confidence.LIKELY,
+                       severity=Severity.NOTABLE,
+                       extra={"note": "names found on this address belong to the "
+                                      "provider's customers; none is followed"})
+
+        if names:
             result.add("reverse DNS", names, source="doh")
-            for n in names[:5]:
-                result.entity(EntityType.DOMAIN, n, relation="reverse-dns",
-                              evidence="reverse-dns", detail="PTR record")
+            if not self._shared:
+                for n in names[:5]:
+                    result.entity(EntityType.DOMAIN, n, relation="reverse-dns",
+                                  evidence="reverse-dns", detail="PTR record")
 
         self._internetdb(target, result)
         self._rdap(target, result)
@@ -81,11 +105,20 @@ class IpModule(Module):
                        url=f"https://www.shodan.io/host/{ip}",
                        extra={"note": "historic observation, not a live scan"})
         if hostnames := data.get("hostnames"):
-            result.add("hostnames", sorted(hostnames), source="shodan-internetdb")
-            for h in sorted(hostnames)[:10]:
-                result.entity(EntityType.DOMAIN, h, relation="hosted-name",
-                              evidence="reverse-dns",
-                              detail="hostname seen by Shodan InternetDB")
+            shared = getattr(self, "_shared", False)
+            result.add("co-hosted names (provider's customers)" if shared
+                       else "hostnames", sorted(hostnames)[:50],
+                       source="shodan-internetdb",
+                       extra={"count": len(hostnames)})
+            # Shodan's list is every name it saw served from this address -
+            # co-location, not a PTR record. Evidence is passive-DNS weight,
+            # which the graph also demotes by hub degree; and on shared
+            # infrastructure it is not a lead at all.
+            if not shared:
+                for h in sorted(hostnames)[:10]:
+                    result.entity(EntityType.DOMAIN, h, relation="hosted-name",
+                                  evidence="passive-dns",
+                                  detail="hostname seen on this address by Shodan")
         if cpes := data.get("cpes"):
             result.add("software (CPE)", sorted(cpes), source="shodan-internetdb",
                        confidence=Confidence.LIKELY)
