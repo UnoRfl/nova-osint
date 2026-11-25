@@ -331,6 +331,96 @@ def test_stats_reports_the_store(store):
     assert s["evidence_files"] == 1 and s["audit_intact"] is True
 
 
+def test_an_observation_keeps_its_clock_across_a_save_and_reload(store):
+    """Without the dates, a reloaded case has no chronology and cannot age.
+
+    ``observed_at`` is when the *source* said a thing was true and
+    ``recorded_at`` is when we read it; the graph needs both to decay a
+    present-tense claim, and the timeline needs the first. They were not
+    persisted, so every reloaded case looked like it had all been observed at
+    once, by nobody in particular.
+    """
+    from nova_osint.core.entities import Entity, EntityType
+    from nova_osint.core.graph import EntityGraph, Observation
+
+    seed = Entity.make(EntityType.DOMAIN, "example.com")
+    other = Entity.make(EntityType.DOMAIN, "old.example")
+    graph = EntityGraph(seed)
+    graph.connect(seed, other, "resolved", Observation(
+        kind="passive-dns", module="dns", observed_at=1_600_000_000.0,
+        recorded_at=1_750_000_000.0, group="ct-logs"))
+    graph.rescore()
+    inv = _investigation()
+    inv.graph = graph
+    cid = store.save(inv, graph)
+
+    reloaded = store.graph(cid)
+    edge = next(iter(reloaded.edges.values()))
+    ob = edge.observations[0]
+    assert ob.observed_at == 1_600_000_000.0
+    assert ob.recorded_at == 1_750_000_000.0
+    assert ob.group == "ct-logs"
+    assert ob.independence == "ct-logs"
+
+
+def test_saving_a_case_does_not_decay_its_evidence_a_second_time(store):
+    """The round trip must be lossless, and for a while it would not have been.
+
+    The observations table stored ``strength`` - the value *after* decay - and
+    that was harmless only because the dates were dropped, leaving a reloaded
+    observation with no age and so no way to decay again. Keeping the dates
+    without changing the column would have aged it twice from the same two
+    timestamps: 2.0 nats in, 0.5 stored, 0.125 back out.
+    """
+    from nova_osint.core.entities import Entity, EntityType
+    from nova_osint.core.graph import EntityGraph, Observation
+
+    seed = Entity.make(EntityType.DOMAIN, "example.com")
+    other = Entity.make(EntityType.DOMAIN, "old.example")
+    graph = EntityGraph(seed)
+    observed = 1_600_000_000.0
+    graph.connect(seed, other, "resolved", Observation(
+        kind="passive-dns", module="dns", observed_at=observed,
+        recorded_at=observed + 180 * 86400.0))
+    graph.rescore()
+    before = next(iter(graph.edges.values())).llr
+    inv = _investigation()
+    inv.graph = graph
+    cid = store.save(inv, graph)
+
+    after = next(iter(store.graph(cid).edges.values())).llr
+    assert after == pytest.approx(before)
+
+
+def test_a_store_written_before_v4_still_opens(tmp_path):
+    """The columns were missing, not wrong. Old rows keep everything they had."""
+    import sqlite3
+
+    root = tmp_path / "cases"
+    first = CaseStore(root)
+    _ = first.conn
+    first.close()
+    conn = sqlite3.connect(first.db_path)
+    conn.execute("DROP TABLE observations")
+    conn.execute("CREATE TABLE observations (case_id TEXT, src TEXT, dst TEXT,"
+                 " label TEXT, kind TEXT, module TEXT, url TEXT,"
+                 " detail TEXT DEFAULT '', evidence TEXT, llr REAL DEFAULT 0)")
+    conn.execute("INSERT INTO observations VALUES"
+                 " ('c1','a','b','rel','dns-a','dns',NULL,'',NULL,3.0)")
+    conn.execute("PRAGMA user_version=3")
+    conn.commit()
+    conn.close()
+
+    with CaseStore(root) as reopened:
+        columns = [r[1] for r in
+                   reopened.conn.execute("PRAGMA table_info(observations)")]
+        assert {"observed_at", "recorded_at", "grp"} <= set(columns)
+        row = reopened.conn.execute("SELECT * FROM observations").fetchone()
+        assert row["llr"] == 3.0
+        # Nothing back-filled: a date nobody recorded stays unrecorded.
+        assert row["observed_at"] is None
+
+
 def test_a_newer_schema_is_refused_rather_than_corrupted(tmp_path):
     store = CaseStore(tmp_path / "cases")
     store.conn.execute("PRAGMA user_version=999")

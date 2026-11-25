@@ -228,6 +228,11 @@ Hard rules:
 - Never state a conclusion as fact. Every hypothesis must be refutable.
 - If the evidence does not support a hypothesis, return none. An empty list is
   a correct answer and a far better one than a guess.
+- Matching usernames are not the same person. Treat a shared handle as a
+  coincidence until something else ties the accounts together.
+- Where the digest lists a contradiction, do not pick a side. Its possible
+  explanations are already given; your job is to name the search that would
+  tell them apart.
 
 Reply with JSON only, in exactly this shape:
 {"questions":[{"query":"...","why":"..."}],
@@ -274,6 +279,32 @@ def digest(inv: Any, *, subject: str, limit: int = 40) -> tuple[str, set[str]]:
             value = str(getattr(f, "value", ""))[:120]
             lines.append(f"  {getattr(f, 'label', '')} | {value} | "
                          f"{getattr(f, 'source', '')}")
+        lines.append("")
+
+    # What already disagrees, with the explanations the deterministic layer
+    # already worked out. Shown rather than left for the model to notice: it
+    # reasons better about a clash it was handed than one it has to spot, and
+    # handing it the standing explanation list is what stops it inventing a
+    # worse one. Subjects are deliberately *not* added to ``known`` - they are
+    # display names, not entity ids, and widening the citation check to accept
+    # them would let a hypothesis cite something the graph never had.
+    clashes = list(getattr(inv, "contradictions", []) or [])[:12]
+    if clashes:
+        lines.append("CONTRADICTIONS ALREADY FOUND (severity | subject | detail):")
+        for clash in clashes:
+            severity = getattr(getattr(clash, "severity", None), "value", "?")
+            lines.append(f"  {severity} | {getattr(clash, 'subject', '?')} | "
+                         f"{getattr(clash, 'summary', '')}")
+            for why in list(getattr(clash, "possible_explanations", []))[:4]:
+                lines.append(f"      could be: {why}")
+        lines.append("")
+
+    line = getattr(inv, "timeline", None)
+    events = list(getattr(line, "events", []) or [])[:20] if line else []
+    if events:
+        lines.append("CHRONOLOGY (as the sources dated it, not when we read it):")
+        for event in events:
+            lines.append(f"  {event.iso} | {event.subject} | {event.label}")
         lines.append("")
 
     # The gaps matter more than the findings. A model that can see "these four

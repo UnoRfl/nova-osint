@@ -261,6 +261,48 @@ ADMIRALTY_KEY = ("grades are Admiralty: letter = strength of the evidence "
                  "(A best, E disconfirming), digit = independent corroboration "
                  "(1 most, 5 none)")
 
+#: Printed above every contradiction list. A reader who meets the section
+#: without it reads a clash as an accusation, which is the single most
+#: expensive misreading this tool can cause.
+CONTRADICTION_KEY = ("a contradiction is two claims that cannot both be true "
+                     "as stated - not proof that either is false; the ordinary "
+                     "explanations are listed with each one")
+
+
+def analysed(inv: Investigation) -> Investigation:
+    """The investigation with its analytical layers present.
+
+    Renderers call this rather than assuming: an ``Investigation`` built by
+    hand, loaded from an old case file or assembled by a test has no analysis
+    on it, and a report that silently omitted the contradictions section for
+    those would be the worst possible failure mode - it reads exactly like
+    "there were none".
+    """
+    if not inv.analysed:
+        inv.analyse()
+    return inv
+
+
+def contradiction_rows(inv: Investigation, limit: int = 20
+                       ) -> list[tuple[str, str, str, str]]:
+    """``[(severity, type, subject, summary)]``, worst first."""
+    from .contradictions import rows as _rows
+
+    return _rows(analysed(inv).contradictions, limit)
+
+
+def timeline_rows(inv: Investigation, limit: int = 40
+                  ) -> list[tuple[str, str, str]]:
+    """``[(date, what, source)]`` in order, at the precision we actually have."""
+    line = analysed(inv).timeline
+    return line.rows(limit) if line is not None else []
+
+
+def evidence_summary_lines(inv: Investigation) -> list[str]:
+    """The counted summary, one statement per line, or ``[]`` if it failed."""
+    built = analysed(inv).evidence_summary
+    return built.lines() if built is not None else []
+
 
 def render_console(inv: Investigation, *, verbose: bool = False,
                    min_severity: Severity = Severity.INFO) -> str:
@@ -417,6 +459,42 @@ def render_console(inv: Investigation, *, verbose: bool = False,
         # ("...independent corroborat") is worse than no legend.
         console.print(f"  [dim]{ADMIRALTY_KEY}[/dim]")
 
+    clashes = contradiction_rows(inv)
+    if clashes:
+        ct = Table(box=box.SIMPLE, show_header=True, header_style="bold red",
+                   expand=True, pad_edge=False)
+        ct.add_column("severity", max_width=8)
+        ct.add_column("kind", max_width=12)
+        ct.add_column("what disagrees")
+        for severity, kind, _subject, line in clashes:
+            colour = ("bold red" if severity == "high" else
+                      "yellow" if severity == "medium" else "white")
+            ct.add_row(f"[{colour}]{severity}[/]", kind, line)
+        console.print(
+            Panel(ct, title="[bold]⚠ what disagrees[/bold]",
+                  border_style="red", box=box.ROUNDED)
+        )
+        console.print(f"  [dim]{CONTRADICTION_KEY}[/dim]")
+
+    dates = timeline_rows(inv, limit=25)
+    if dates:
+        tt = Table(box=box.SIMPLE, show_header=True, header_style="bold cyan",
+                   expand=True, pad_edge=False)
+        tt.add_column("when", max_width=12)
+        tt.add_column("what")
+        tt.add_column("source", style="dim", max_width=16)
+        for when, what, source in dates:
+            tt.add_row(when, what, source)
+        console.print(
+            Panel(tt, title="[bold]◷ chronology[/bold]",
+                  border_style="cyan", box=box.ROUNDED)
+        )
+        line = inv.timeline
+        if line is not None and line.dormant:
+            who, days = line.dormant[0]
+            console.print(f"  [dim]{who}: nothing since {days:.0f} days before "
+                          f"this scan[/dim]")
+
     if inv.pivots:
         p = Table(box=box.SIMPLE, show_header=True, header_style="bold magenta", expand=True)
         p.add_column("pivot")
@@ -469,6 +547,21 @@ def _render_plain(inv: Investigation, floor: int, order: dict, verbose: bool) ->
         for grade, label, relation, why, reading in links:
             out.append(f"  {grade}  {label}  ({relation}; {why}) - {reading}")
         out.append(f"  {ADMIRALTY_KEY}")
+    clashes = contradiction_rows(inv)
+    if clashes:
+        out.append("\n[what disagrees]")
+        for severity, kind, _subject, line in clashes:
+            out.append(f"  {severity:<6} {kind:<11} {line}")
+        out.append(f"  {CONTRADICTION_KEY}")
+    dates = timeline_rows(inv, limit=25)
+    if dates:
+        out.append("\n[chronology]")
+        for when, what, source in dates:
+            out.append(f"  {when:<11} {what}  ({source})")
+    counted = evidence_summary_lines(inv)
+    if counted:
+        out.append("\n[evidence summary]")
+        out += [f"  {line}" for line in counted]
     if inv.pivots:
         out.append("\n[pivots]")
         for p in inv.pivots[:40]:
@@ -607,6 +700,47 @@ def render_markdown(inv: Investigation) -> str:
 
         out += ["## Which one is your subject", "",
                 identity_md(inv.resolution)]
+    counted = evidence_summary_lines(inv)
+    if counted:
+        out += [
+            "## Evidence summary",
+            "",
+            "Counted, not estimated. A finding total rises with the number of "
+            "sites touched; none of the numbers below do.",
+            "",
+        ]
+        out += [f"- {line.strip()}" if line.startswith("  ") else f"- **{line}**"
+                for line in counted]
+        out.append("")
+    clashes = contradiction_rows(inv)
+    if clashes:
+        out += [
+            "## What disagrees",
+            "",
+            CONTRADICTION_KEY.capitalize() + ".",
+            "",
+            "| Severity | Kind | What disagrees |",
+            "|---|---|---|",
+        ]
+        out += [f"| {sev} | {kind} | {line} |" for sev, kind, _s, line in clashes]
+        out.append("")
+        for clash in analysed(inv).contradictions[:8]:
+            out += [f"**{clash.subject}** — possible explanations:", ""]
+            out += [f"- {why}" for why in clash.possible_explanations]
+            out.append("")
+    dates = timeline_rows(inv)
+    if dates:
+        out += [
+            "## Chronology",
+            "",
+            "Dates as the *sources* gave them, at the precision they gave them. "
+            "Nothing here is the time NOVA read a page.",
+            "",
+            "| When | What | Source |",
+            "|---|---|---|",
+        ]
+        out += [f"| {when} | {what} | {source} |" for when, what, source in dates]
+        out.append("")
     out += _markdown_profile(inv)
     rows = status_rows(inv)
     if rows:
@@ -840,6 +974,18 @@ def render_graphml_report(inv: Investigation) -> str:
     return render_graphml(inv)
 
 
+def render_gexf_report(inv: Investigation) -> str:
+    from .graphview import render_gexf
+
+    return render_gexf(inv)
+
+
+def render_graph_csv_report(inv: Investigation) -> str:
+    from .graphview import render_graph_csv
+
+    return render_graph_csv(inv)
+
+
 RENDERERS = {
     "console": lambda inv: render_console(inv),
     "json": render_json,
@@ -852,6 +998,11 @@ RENDERERS = {
     "graph": render_graph,
     #: For Gephi / yEd / Cytoscape, which do link analysis properly.
     "graphml": render_graphml_report,
+    #: Gephi's own format. Keeps the typed columns GraphML flattens.
+    "gexf": render_gexf_report,
+    #: Nodes and edges as two CSV tables, for a spreadsheet or pandas. Distinct
+    #: from the ``csv`` format, which is the flat findings list.
+    "graph-csv": render_graph_csv_report,
     #: The dossier: the same investigation organised around the subject rather
     #: than around which module happened to find what.
     "profile": lambda inv: _profile("text", inv),

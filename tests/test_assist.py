@@ -304,3 +304,47 @@ def test_nothing_the_model_returns_is_shaped_like_evidence():
         assert "hypoth" not in key and "assist" not in key and "model" not in key
     assert not hasattr(Hypothesis, "llr")
     assert "hypothesis" in Hypothesis("a claim here", ("x",)).to_dict()["status"]
+
+
+def test_the_digest_carries_contradictions_without_widening_the_citation_check():
+    """The model reasons better about a clash it was handed than one it must spot.
+
+    But a contradiction's ``subject`` is a display name, not an entity id, and
+    letting those into ``known`` would let a hypothesis cite something the
+    graph never contained - which is precisely what the citation check exists
+    to catch.
+    """
+    from nova_osint.core.contradictions import (
+        Claim,
+        Contradiction,
+        ContradictionType,
+        Severity,
+    )
+
+    graph = EntityGraph(Entity.make(T.DOMAIN, "example.com"))
+    mail = Entity.make(T.EMAIL, "webmaster@example.com")
+    graph.connect(graph.nodes[graph.seed].entity, mail, "contact",
+                  Observation(kind="published-contact", module="web"))
+    graph.rescore()
+
+    class Inv:
+        target = "example.com"
+        findings: list = []
+        results: list = []
+        skipped: list = []
+        expansion = None
+        timeline = None
+
+    inv = Inv()
+    inv.graph = graph
+    inv.contradictions = [Contradiction(
+        type=ContradictionType.ATTRIBUTE, subject="Ada Lovelace: Based in",
+        severity=Severity.HIGH,
+        claims=[Claim(value="Berlin", source="wikidata"),
+                Claim(value="Lisbon", source="web")])]
+
+    text, known = digest(inv, subject="example.com")
+    assert "CONTRADICTIONS ALREADY FOUND" in text
+    assert "Ada Lovelace: Based in" in text
+    assert "could be:" in text
+    assert known == {"domain:example.com", "email:webmaster@example.com"}

@@ -28,8 +28,10 @@ the personal data.
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import html as html_mod
+import io
 import json
 import re
 from typing import Any
@@ -170,6 +172,137 @@ def render_graphml(inv: Investigation, redactor: Redactor | None = None) -> str:
                 "</edge>")
     out.append("</graph></graphml>")
     return "\n".join(out) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# GEXF and CSV
+# ---------------------------------------------------------------------------
+
+
+def render_gexf(inv: Investigation, redactor: Redactor | None = None) -> str:
+    """GEXF 1.3, which is Gephi's own format rather than one it imports.
+
+    Worth having beside GraphML because Gephi's GEXF reader keeps typed
+    attribute columns that its GraphML reader flattens, and the columns an
+    analyst actually filters on - grade, corroborations, whether the identity
+    reading was demoted - are exactly the ones that get flattened.
+    """
+    graph: EntityGraph | None = inv.graph
+    red = redactor or Redactor(False)
+    e = html_mod.escape
+    out = [
+        "<?xml version='1.0' encoding='UTF-8'?>",
+        "<gexf xmlns='http://gexf.net/1.3' version='1.3'>",
+        f"<meta><creator>NOVA</creator><description>"
+        f"{e(inv.target)} ({e(inv.target_type.value)}); coverage gaps: "
+        f"{e('; '.join(coverage_lines(inv)) or 'none')}"
+        "</description></meta>",
+        "<graph mode='static' defaultedgetype='undirected'>",
+        "<attributes class='node'>"
+        "<attribute id='0' title='type' type='string'/>"
+        "<attribute id='1' title='score' type='double'/>"
+        "<attribute id='2' title='depth' type='integer'/>"
+        "<attribute id='3' title='corroborations' type='integer'/>"
+        "<attribute id='4' title='contradicted' type='boolean'/>"
+        "<attribute id='5' title='sources' type='string'/>"
+        "</attributes>",
+        "<attributes class='edge'>"
+        "<attribute id='0' title='grade' type='string'/>"
+        "<attribute id='1' title='probability' type='double'/>"
+        "<attribute id='2' title='evidence' type='string'/>"
+        "<attribute id='3' title='identity_factor' type='double'/>"
+        "</attributes>",
+    ]
+    out.append("<nodes>")
+    if graph is not None:
+        for node in graph:
+            label = red.entity(node.entity.etype, node.entity.value)
+            out.append(
+                f"<node id='{e(node.entity.eid)}' label='{e(label)}'><attvalues>"
+                f"<attvalue for='0' value='{e(node.entity.etype.value)}'/>"
+                f"<attvalue for='1' value='{node.score:.4f}'/>"
+                f"<attvalue for='2' value='{node.depth}'/>"
+                f"<attvalue for='3' value='{node.corroborations}'/>"
+                f"<attvalue for='4' value='{str(node.contradicted).lower()}'/>"
+                f"<attvalue for='5' value='{e(','.join(sorted(node.sources)))}'/>"
+                "</attvalues></node>")
+    out.append("</nodes>")
+    out.append("<edges>")
+    if graph is not None:
+        for i, edge in enumerate(graph.edges.values()):
+            why = "; ".join(f"{o.kind} ({o.module})" for o in edge.observations)
+            # GEXF weights are expected positive; a disconfirming edge would be
+            # drawn as a repulsion or silently dropped, so the sign lives in
+            # the grade and the weight carries magnitude only.
+            out.append(
+                f"<edge id='e{i}' source='{e(edge.src)}' target='{e(edge.dst)}' "
+                f"label='{e(edge.label)}' weight='{abs(edge.llr):.3f}'><attvalues>"
+                f"<attvalue for='0' value='{edge.grade}'/>"
+                f"<attvalue for='1' value='{edge.probability:.3f}'/>"
+                f"<attvalue for='2' value='{e(why)}'/>"
+                f"<attvalue for='3' value='{edge.identity_factor:.2f}'/>"
+                "</attvalues></edge>")
+    out.append("</edges>")
+    out.append("</graph></gexf>")
+    return "\n".join(out) + "\n"
+
+
+def render_graph_csv(inv: Investigation, redactor: Redactor | None = None) -> str:
+    """The graph as three CSV tables in one file: meta, nodes, edges.
+
+    One file rather than three because every output in NOVA is a single string
+    written to a single path, and splitting that for one format would mean
+    special-casing it in ``write()``, the GUI's export button and the case
+    store. The tables are separated by a blank line and each has its own header
+    row, which is what a spreadsheet and ``pandas.read_csv(skiprows=...)`` both
+    cope with.
+
+    The meta table is not decoration. A spreadsheet of forty edges with no
+    statement of what was *not* checked is the same sparse picture the GraphML
+    export refuses to hand over - it reads as "there is little here" rather
+    than "we were not allowed to look".
+    """
+    graph: EntityGraph | None = inv.graph
+    red = redactor or Redactor(False)
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(["table", "key", "value"])
+    writer.writerow(["meta", "target", red.text(inv.target)])
+    writer.writerow(["meta", "target_type", inv.target_type.value])
+    writer.writerow(["meta", "entities", len(graph) if graph is not None else 0])
+    writer.writerow(["meta", "edges", len(graph.edges) if graph is not None else 0])
+    gaps = coverage_lines(inv)
+    writer.writerow(["meta", "coverage_gaps", len(gaps)])
+    for gap in gaps:
+        writer.writerow(["meta", "coverage_gap", gap])
+    buf.write("\n")
+    writer.writerow(["table", "id", "label", "type", "score", "depth",
+                     "corroborations", "support", "against", "contradicted",
+                     "sources"])
+    if graph is not None:
+        for node in graph:
+            writer.writerow([
+                "node", node.entity.eid,
+                red.entity(node.entity.etype, node.entity.value),
+                node.entity.etype.value, f"{node.score:.4f}", node.depth,
+                node.corroborations, f"{node.support:.3f}",
+                f"{node.against:.3f}", node.contradicted,
+                ",".join(sorted(node.sources)),
+            ])
+    buf.write("\n")
+    writer.writerow(["table", "src", "dst", "relation", "llr", "probability",
+                     "grade", "corroborations", "identity_factor", "evidence",
+                     "urls"])
+    if graph is not None:
+        for edge in graph.edges.values():
+            writer.writerow([
+                "edge", edge.src, edge.dst, edge.label, f"{edge.llr:.3f}",
+                f"{edge.probability:.3f}", edge.grade, edge.corroborations,
+                f"{edge.identity_factor:.2f}",
+                "; ".join(f"{o.kind} ({o.module})" for o in edge.observations),
+                "; ".join(red.text(o.url) for o in edge.observations if o.url),
+            ])
+    return buf.getvalue()
 
 
 # ---------------------------------------------------------------------------

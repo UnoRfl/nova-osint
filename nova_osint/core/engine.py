@@ -390,7 +390,7 @@ class Engine:
         inv = Investigation(target=target, target_type=ttype, skipped=skipped)
         if not modules:
             log.warning("no runnable modules for %s (%s)", target, ttype.value)
-            return inv.finish()
+            return inv.finish().analyse()
 
         log.info(
             "scanning %s as %s with %d module(s): %s",
@@ -409,7 +409,7 @@ class Engine:
         graph.rescore()
         inv.graph = graph
         inv.requests = list(self._ledger)
-        inv.finish()
+        inv.finish().analyse()
         log.info(
             "scan finished in %.1fs: %d finding(s), %d module(s) incomplete",
             inv.duration, len(inv.findings), len(inv.incomplete),
@@ -712,7 +712,7 @@ class Engine:
             from .identity import resolve
 
             inv.resolution = resolve(inv, brief)
-        inv.finish()
+        inv.finish().analyse()
         log.info(
             "investigation finished in %.1fs: %d entities, %d edges, %d finding(s), "
             "stopped by %s",

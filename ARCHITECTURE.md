@@ -106,6 +106,9 @@ nova-osint/
 | `registry.py` | The `Module` base class, the `@register` decorator, and `detect_type()`. Adding a source touches this file once (an import) and nothing else. |
 | `engine.py` | Runs the modules, isolates their failures, records their status, applies the normaliser. |
 | `report.py` | Every renderer. Takes an `Investigation`, returns a string. |
+| `contradictions.py` | `detect()` — every disagreement in one investigation, in one shape. Reads the four detectors that already existed rather than adding a fifth. |
+| `temporal.py` | `build()` — the chronology, and `chronology_conflicts()` — the orderings that cannot be right. Never consults the wall clock. |
+| `summary.py` | `EvidenceSummary` — what a collection actually consists of, and `CLASS_BY_KIND`, which sorts every evidence kind into observed / derived / inferred / unverified. |
 | `dns.py` | DNS-over-HTTPS helper shared by several modules. Not a module itself. |
 | `art.py` | The banners, spinner and per-module glyphs. |
 
@@ -882,6 +885,95 @@ modules that ask both the same question run once. A per-module time limit
 letting it hold the run open — a thread cannot be killed, so past the
 deadline its requests return "module time limit reached" without a socket
 being opened, and the result degrades with that reason on it.
+
+### A shared mailbox is not a person — in the graph, not only the frontier
+
+`core/addresses.py` has said since it was written that a role address is
+"demoted, not suppressed" and "must never be treated as evidence about" a
+person. Only half of that was implemented: the *pivot* decision consulted it,
+edge weighting never did. So `sales@example.com` appearing on two sites still
+scored as identity evidence linking whoever ran them, which is the exact
+failure the module exists to prevent.
+
+`graph.identity_discount(src, dst)` closes it, and the scope is the whole
+point:
+
+| Edge | Factor | Why |
+|---|---|---|
+| `sales@x.com` → `x.com` (`email-domain`) | 1.0 | that is infrastructure, and a shared mailbox has plenty |
+| `sales@x.com` → a handle (`profile-email`) | 0.25 | two sites sharing a mailbox is not two people being one person |
+| `noreply@…` → a handle | 0.10 | nobody is behind it; the alias is real but tells you nothing new |
+| any edge, disconfirming | 1.0 | "the site says the handle is free" is just as true whoever asked |
+
+Neither factor is zero. The link is real and stays in the report; what is
+removed is the weight. It applies in `Edge.effective_llr` beside hub demotion
+and for the same reason — degree catches a mailbox *this scan* saw on forty
+sites, and cannot catch `sales@` on a scan that found it twice.
+
+### The analytical layers
+
+Three modules that read what the collectors produced and say what it amounts
+to. All three are pure: no socket, no clock beyond `Investigation.started_at`,
+safe on a half-built investigation, and each returns nothing rather than
+raising when the layer it reads was never populated.
+`Investigation.analyse()` runs all three behind one try/except apiece — a scan
+whose *interpretation* raised is still a scan, and dropping 500 findings
+because a date failed to parse would be the worst trade in the program.
+
+**`contradictions.py`** gives one shape to disagreement that three parts of
+NOVA already detected separately: `graph._contradict()` (an edge argues against
+a node), `identity.Verdict.CONTRADICTS` (a candidate is incompatible with the
+brief), `biography.Attribute.disputed` (two sources, two answers), plus
+chronology. Every record carries `possible_explanations` from a standing
+catalogue, and the engine never picks one — a contradiction is two claims that
+cannot both be true *as stated*, which has six ordinary explanations before
+anybody has lied. Severity comes from how identifying the attribute is, not
+from the size of the gap: nobody has two birthdays, everybody changes jobs.
+
+**`temporal.py`** builds the chronology from what *sources* dated, never from
+when NOVA read them — `recorded_at` is excluded on purpose, because a timeline
+built from it is a timeline of our own scanning. Precision (`day` / `month` /
+`year`) is carried the whole way through, so "created in 2019" and "first
+commit 2019-04-02" are not reported as an eleven-month impossibility. It
+detects activity before creation, two sources giving two creation dates,
+dormancy, and accounts created close together — the last as a question, never
+a conclusion. It never derives a location from a clock.
+
+**`summary.py`** replaces `281 findings` — a number that rises when a scan
+touches more sites, which is the one property a quality measure must not have.
+`CLASS_BY_KIND` sorts every evidence kind into observed / derived / inferred /
+unverified, and a test asserts the table stays exhaustive over `EVIDENCE` in
+both directions. **Class and strength are independent:** `spki-shared` is
+`INFERRED` — nobody published "these hosts are related", NOVA noticed one key
+in two certificates — *and* worth 6 nats. Collapsing those is how a tool ends
+up treating its own arithmetic as testimony.
+
+### Reading a saved case back
+
+`commands.investigation_from_case()` reassembles an `Investigation` from the
+store — findings, statuses, graph — so the analytical layers run over an old
+case without re-parsing anything. It is **not** a replay: `core/replay.py`
+re-runs the parsers against stored bodies to prove they still work, this only
+reads what was recorded. A module that ran and found nothing keeps its status,
+because "checked, nothing there" and "never checked" are different statements.
+
+That powers four read-side verbs — `nova timeline`, `nova contradictions`,
+`nova pivots`, `nova graph` — each a question a reader actually asks of a
+finished scan. `nova pivots` reads the graph frontier rather than the legacy
+`Pivot` list, because a case whose modules all emit typed entities has a rich
+frontier and no pivot rows at all.
+
+> A verb added to the parser and **not** to `cli._CASE_COMMANDS` parses
+> cleanly and then falls through to the top-level help, which looks exactly
+> like a typo on the user's part. Both places, every time.
+
+Schema **v4** persists `observed_at`, `recorded_at` and `group` on every
+observation. Without them a reloaded case had no chronology and its evidence
+could not age. The same migration changed what the `llr` column stores from
+`strength` (post-decay) to the module's own override: harmless while the dates
+were dropped, but with dates restored the same two timestamps would have aged
+an observation twice — a 180-day-old passive-DNS record went 2.0 → 0.5 in and
+0.5 → 0.125 back out.
 
 ### The suite is offline by construction
 

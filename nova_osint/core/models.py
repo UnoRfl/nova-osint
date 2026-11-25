@@ -346,6 +346,52 @@ class Investigation:
     #: check threw away - a consumer that can see the questions but not the
     #: discards has been told the flattering half.
     assist: dict[str, Any] = field(default_factory=dict)
+    #: The analytical layers, filled in by :meth:`analyse`. Cached rather than
+    #: recomputed per renderer for the same reason ``finish()`` freezes the
+    #: clock: three renderings of one case must say the same thing, and these
+    #: are derived from the results, so they only change when the results do.
+    #: ``Any`` to keep this module free of the import cycle.
+    contradictions: list[Any] = field(default_factory=list)
+    timeline: Any = None
+    evidence_summary: Any = None
+    #: True once :meth:`analyse` has run, so an investigation with genuinely
+    #: nothing to say is distinguishable from one nobody analysed.
+    analysed: bool = False
+
+    def analyse(self, *, force: bool = False) -> Investigation:
+        """Derive the contradiction, chronology and summary layers.
+
+        Deterministic and offline: it reads only what the scan already
+        collected, opens no socket and consults no clock beyond
+        :attr:`started_at`. Safe to call on a half-built investigation, on one
+        with no graph, and twice.
+
+        A failure here must never cost the findings. The analytical layers are
+        the *interpretation* of a scan; a scan whose interpretation raised is
+        still a scan, and dropping 500 findings because a date failed to parse
+        would be the worst trade in the program. Same boundary the GUI's
+        renderers got after one panel's exception stranded a finished run.
+        """
+        if self.analysed and not force:
+            return self
+        from . import contradictions as _contradictions
+        from . import summary as _summary
+        from . import temporal as _temporal
+
+        try:
+            self.contradictions = _contradictions.detect(self)
+        except Exception:
+            self.contradictions = []
+        try:
+            self.timeline = _temporal.build(self)
+        except Exception:
+            self.timeline = None
+        try:
+            self.evidence_summary = _summary.build(self, self.contradictions)
+        except Exception:
+            self.evidence_summary = None
+        self.analysed = True
+        return self
 
     def finish(self) -> Investigation:
         """Freeze the clock.
@@ -431,4 +477,18 @@ class Investigation:
         if self.not_followed:
             out["not_followed"] = [{"lead": lead, "reason": why}
                                    for lead, why in self.not_followed]
+        # Emitted only when the analysis has actually run. An empty
+        # ``contradictions`` list means "we looked and found none"; the key
+        # being absent means "nobody looked", and a consumer has to be able to
+        # tell those apart.
+        if self.analysed:
+            out["contradictions"] = [c.to_dict() for c in self.contradictions]
+            if self.timeline is not None:
+                out["timeline"] = self.timeline.to_dict()
+            if self.evidence_summary is not None:
+                # Its own key rather than merged into ``summary``: the old
+                # summary is a compatibility surface other things read, and
+                # quietly changing what its fields mean is exactly the kind of
+                # silent semantic change this upgrade was told not to make.
+                out["evidence_summary"] = self.evidence_summary.to_dict()
         return out

@@ -221,7 +221,10 @@ def replay(store: Any, case_id: str, config: Config | None = None
     graph.rescore()
     inv.graph = graph
     inv.results.sort(key=lambda r: r.module)
-    inv.finish()
+    # Analysed here too, and it must reach the same conclusions it did live:
+    # every input to it is stored evidence and the scan's own clock, so a
+    # replay that disagrees with the original is a bug in one of them.
+    inv.finish().analyse()
     return inv, report
 
 

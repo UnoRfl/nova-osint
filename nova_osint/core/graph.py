@@ -48,6 +48,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
+from .addresses import judge_address
 from .entities import Entity, EntityType
 
 # ---------------------------------------------------------------------------
@@ -358,12 +359,63 @@ class Observation:
         return d
 
 
+#: Entity kinds an edge can make a claim *about a person* with. A link between
+#: a mailbox and a domain says something about infrastructure; a link between a
+#: mailbox and a handle says something about who someone is, and only the
+#: second reading is the one a shared mailbox cannot support.
+_PERSON_BEARING = frozenset({EntityType.PERSON, EntityType.USERNAME,
+                             EntityType.EMAIL})
+
+#: How much of an identity claim survives when one end is a mailbox that does
+#: not belong to an individual.
+#:
+#: ``addresses.py`` has said since it was written that a role address is
+#: "demoted, not suppressed" and "must never be treated as evidence about" a
+#: person - but the demotion only ever reached the *pivot* decision, so
+#: ``sales@`` linking two handles still scored as identity evidence in the
+#: graph, which is the exact failure the module was written to prevent.
+#:
+#: Neither factor is zero, and that is deliberate. ``sales@example.com`` on two
+#: sites really is evidence that those sites share a mailbox, and a GitHub
+#: noreply alias really does belong to the account it was minted for. What
+#: neither can support is the inference that two *people* are one person, so
+#: what is removed is the weight, not the edge.
+ROLE_ADDRESS_IDENTITY = 0.25
+AUTOMATED_ADDRESS_IDENTITY = 0.1
+
+
+def identity_discount(src: Entity, dst: Entity) -> float:
+    """How much of a person-identity claim these two endpoints can carry.
+
+    ``1.0`` for everything except an edge that reads as a statement about a
+    person and has a shared or machine mailbox at one end.
+    """
+    if src.etype not in _PERSON_BEARING or dst.etype not in _PERSON_BEARING:
+        return 1.0
+    worst = 1.0
+    for entity in (src, dst):
+        if entity.etype is not EntityType.EMAIL:
+            continue
+        verdict = judge_address(entity.value)
+        if verdict.identifies_a_person:
+            continue
+        worst = min(worst, ROLE_ADDRESS_IDENTITY if verdict.kind == "role"
+                    else AUTOMATED_ADDRESS_IDENTITY)
+    return worst
+
+
 @dataclass
 class Edge:
     src: str
     dst: str
     label: str
     observations: list[Observation] = field(default_factory=list)
+    #: Set by :meth:`EntityGraph.connect` from :func:`identity_discount`, which
+    #: needs the endpoints' *types* and so cannot be computed from an edge's
+    #: two id strings. Applied in :meth:`effective_llr` rather than in
+    #: :attr:`llr`, because the raw strength of the observations is a fact
+    #: about what was seen and stays reportable as one.
+    identity_factor: float = 1.0
 
     @property
     def key(self) -> tuple[str, str, str]:
@@ -438,19 +490,36 @@ class Edge:
         ``hub_degree`` is the degree of the busier endpoint. A link through a
         node with two neighbours keeps its full weight; through one with two
         hundred it keeps about a third. Positive evidence only - disconfirming
-        evidence is not weakened by the hub being popular.
+        evidence is not weakened by the hub being popular, nor by one end being
+        a shared mailbox: "this site says the handle is free" is just as true
+        whoever asked.
+
+        :attr:`identity_factor` applies on the same terms and for the same
+        reason. Degree catches a mailbox that *this scan* saw on forty sites;
+        it cannot catch ``sales@`` on a scan that only found it twice, and the
+        second is a shared mailbox just as much as the first.
         """
-        if self.llr <= 0 or hub_degree <= 2:
+        if self.llr <= 0:
             return self.llr
-        return self.llr / (1.0 + math.log(hub_degree / 2.0))
+        value = self.llr * self.identity_factor
+        if hub_degree <= 2:
+            return value
+        return value / (1.0 + math.log(hub_degree / 2.0))
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "src": self.src, "dst": self.dst, "label": self.label,
             "llr": round(self.llr, 3), "probability": round(self.probability, 3),
             "grade": self.grade,
             "observations": [o.to_dict() for o in self.observations],
         }
+        # Only when it bites. A factor of 1.0 on every edge in the file would
+        # train a reader to skim past the one place it says something.
+        if self.identity_factor < 1.0:
+            d["identity_factor"] = self.identity_factor
+            d["identity_note"] = ("one end is a mailbox that does not identify "
+                                  "a person; the identity reading is demoted")
+        return d
 
 
 # ---------------------------------------------------------------------------
@@ -540,7 +609,8 @@ class EntityGraph:
         key = (s.entity.eid, d.entity.eid, label)
         edge = self.edges.get(key)
         if edge is None:
-            edge = Edge(s.entity.eid, d.entity.eid, label)
+            edge = Edge(s.entity.eid, d.entity.eid, label,
+                        identity_factor=identity_discount(s.entity, d.entity))
             self.edges[key] = edge
             self._adj[s.entity.eid].add(d.entity.eid)
             self._adj[d.entity.eid].add(s.entity.eid)

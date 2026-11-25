@@ -290,8 +290,10 @@ badly wrong.
 
 ## Output
 
-Seven formats: `console` (the default), `json`, `csv`, `markdown`, `html`,
-`graph` (an interactive page) and `graphml` (for Gephi / yEd / Cytoscape).
+Nine formats: `console` (the default), `json`, `csv`, `markdown`, `html`,
+`graph` (an interactive page), `graphml` (for Gephi / yEd / Cytoscape), `gexf`
+(Gephi's own, which keeps the typed columns GraphML flattens) and `graph-csv`
+(nodes and edges as tables, for a spreadsheet or pandas).
 
 ```bash
 nova scan example.com --format html --output report.html   # standalone, dark-mode aware
@@ -402,6 +404,38 @@ nova diff example.com              # what changed between the last two runs
 nova link <case-a> <case-b>        # entities two investigations share
 nova where alice@example.com       # which cases have ever seen this
 ```
+
+### Asking a finished case a question
+
+Four views over a saved case, each one a question a reader actually asks. They
+read what was recorded — no network, no re-parsing.
+
+```bash
+nova timeline <case>         # the chronology, as the sources dated it
+nova contradictions <case>   # what disagrees with what, and why that may be fine
+nova pivots <case>           # what is worth looking at next, best first
+nova graph <case> -f gexf -o case.gexf
+```
+
+`contradictions` is the one worth reading first. It collects every
+disagreement — two sources giving two answers, a lead the evidence argued
+against, a candidate incompatible with your brief, a chronology that cannot be
+right — and prints each with the ordinary explanations alongside it:
+
+```
+[high] chronology: unorfl
+  unorfl shows activity on 2019-04-02 but is recorded as created on 2025-07-29
+  could be:
+    . one of the two dates is the date of a record, not of the event
+    . an account was renamed and inherited an older or newer history
+    . a source republished old material with a new timestamp
+    . a timezone or date-format misreading of one of the two values
+    . the two records are about different subjects
+  status: unresolved
+```
+
+A contradiction is two claims that cannot both be true *as stated*. It is not
+proof that either is false, and NOVA never picks a side.
 
 `diff` is the feature that makes the tool worth running twice: a new subdomain,
 a changed MX, a handle that now exists. Findings are keyed so a changed value

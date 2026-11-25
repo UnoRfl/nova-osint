@@ -63,7 +63,7 @@ log = get_logger("store")
 
 DEFAULT_CASE_DIR = Path.home() / ".local" / "share" / "nova-osint"
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS cases (
@@ -119,7 +119,14 @@ CREATE TABLE IF NOT EXISTS observations (
     url       TEXT,
     detail    TEXT DEFAULT '',
     evidence  TEXT,
-    llr       REAL DEFAULT 0
+    llr       REAL DEFAULT 0,
+    -- When the *source* said it was true, and when we read it. Without these
+    -- a reloaded case has no chronology and its evidence cannot age: the
+    -- timeline, the decay and the independence grouping all silently degrade
+    -- to "everything was observed at once, by nobody in particular".
+    observed_at REAL,
+    recorded_at REAL,
+    grp       TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS observations_edge ON observations(case_id, src, dst);
 
@@ -578,10 +585,18 @@ class CaseStore:
         conn.execute("DELETE FROM observations WHERE case_id=?", (cid,))
         conn.executemany(
             "INSERT INTO observations "
-            "(case_id,src,dst,label,kind,module,url,detail,evidence,llr) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "(case_id,src,dst,label,kind,module,url,detail,evidence,llr,"
+            "observed_at,recorded_at,grp) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            # ``o.llr`` - the module's own override, usually NULL - and not
+            # ``o.strength``, which is the value *after* decay. Storing the
+            # decayed number was harmless while the dates were dropped, because
+            # a reloaded observation had no age and so could not decay again.
+            # Now that it keeps its dates it would age a second time from the
+            # same timestamps: a 180-day-old passive-DNS record went 2.0 -> 0.5
+            # on the way in and 0.5 -> 0.125 on the way back out.
             [(cid, e.src, e.dst, e.label, o.kind, o.module, o.url, o.detail,
-              o.evidence, o.strength)
+              o.evidence, o.llr, o.observed_at, o.recorded_at, o.group)
              for e in graph.edges.values() for o in e.observations],
         )
 
@@ -671,7 +686,10 @@ class CaseStore:
                 continue
             graph.connect(src, dst, o["label"], Observation(
                 kind=o["kind"], module=o["module"], url=o["url"],
-                detail=o["detail"] or "", evidence=o["evidence"], llr=o["llr"]))
+                detail=o["detail"] or "", evidence=o["evidence"], llr=o["llr"],
+                observed_at=_col(o, "observed_at"),
+                recorded_at=_col(o, "recorded_at"),
+                group=_col(o, "grp") or ""))
         graph.rescore()
         return graph
 
@@ -789,9 +807,36 @@ class CaseStore:
         }
 
 
+def _col(row: sqlite3.Row, name: str) -> Any:
+    """One column, or ``None`` when this row's table predates it.
+
+    A store is migrated on open, so in normal use the column is always there.
+    A row handed in from elsewhere - an attached older database, a test fixture
+    built by hand - is not worth an exception: the caller's fallback for a
+    missing timestamp is already "we were not told", which is the truth.
+    """
+    try:
+        return row[name]
+    except (IndexError, KeyError):
+        return None
+
+
 def _migrate_1_to_2(conn: sqlite3.Connection) -> None:
     """v2 keeps response headers, so a replay can rebuild the real Response."""
     conn.execute("ALTER TABLE requests ADD COLUMN headers TEXT DEFAULT '{}'")
+
+
+def _migrate_3_to_4(conn: sqlite3.Connection) -> None:
+    """Give an observation back its clock.
+
+    The columns were missing rather than wrong, so every existing row keeps its
+    llr and simply has no dates - which is exactly what it always had. Nothing
+    is back-filled: inventing a timestamp for an observation nobody dated would
+    put fiction on a timeline.
+    """
+    conn.execute("ALTER TABLE observations ADD COLUMN observed_at REAL")
+    conn.execute("ALTER TABLE observations ADD COLUMN recorded_at REAL")
+    conn.execute("ALTER TABLE observations ADD COLUMN grp TEXT DEFAULT ''")
 
 
 def _migrate_2_to_3(conn: sqlite3.Connection) -> None:
@@ -801,4 +846,5 @@ def _migrate_2_to_3(conn: sqlite3.Connection) -> None:
 
 #: Applied in order by :meth:`CaseStore._migrate`. A store two versions behind
 #: runs both, so an old case directory keeps working instead of being refused.
-_MIGRATIONS = {2: _migrate_1_to_2, 3: _migrate_2_to_3}
+_MIGRATIONS = {2: _migrate_1_to_2, 3: _migrate_2_to_3,
+               4: _migrate_3_to_4}

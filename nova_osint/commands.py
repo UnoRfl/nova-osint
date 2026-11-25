@@ -568,6 +568,242 @@ def cmd_where(args: argparse.Namespace, store: CaseStore) -> int:
     return EXIT_OK
 
 
+# ---------------------------------------------------------------------------
+# reading a saved case back as an investigation
+# ---------------------------------------------------------------------------
+
+
+def investigation_from_case(store: CaseStore, cid: str) -> Any:
+    """Rebuild enough of an ``Investigation`` to analyse a saved case offline.
+
+    Not a replay. :mod:`~nova_osint.core.replay` re-runs the parsers against
+    stored response bodies to prove they still produce what they produced;
+    this only reassembles what was *recorded* - findings, statuses, the graph -
+    so the analytical layers can run over an old case without re-parsing
+    anything. Cheap, and it opens no socket.
+
+    What it cannot restore is anything the store never kept: the brief, the
+    resolution, the expansion bookkeeping. Those layers are simply absent, and
+    every detector already treats absent as "not applicable" rather than
+    "empty".
+    """
+    from .core.models import (
+        Confidence,
+        Finding,
+        Investigation,
+        ModuleStatus,
+        ScanResult,
+        Severity,
+        TargetType,
+    )
+
+    record = store.case(cid)
+    if record is None:
+        return None
+    try:
+        ttype = TargetType(record.target_type)
+    except ValueError:
+        ttype = TargetType.UNKNOWN
+    inv = Investigation(target=record.target, target_type=ttype,
+                        started_at=record.started_at)
+    inv.finished_at = record.started_at + record.duration
+
+    statuses = store.statuses(record.id)
+    results: dict[str, Any] = {}
+    for row in store.findings(record.id):
+        module = row["module"]
+        result = results.get(module)
+        if result is None:
+            status, reason = statuses.get(module, ("success", ""))
+            try:
+                module_status = ModuleStatus(status)
+            except ValueError:
+                module_status = ModuleStatus.SUCCESS
+            result = ScanResult(module=module, target=record.target,
+                                target_type=ttype, status=module_status,
+                                status_reason=reason or "",
+                                started_at=record.started_at)
+            results[module] = result
+        try:
+            confidence = Confidence(row["confidence"])
+        except ValueError:
+            confidence = Confidence.POSSIBLE
+        try:
+            severity = Severity(row["severity"])
+        except ValueError:
+            severity = Severity.INFO
+        result.findings.append(Finding(
+            label=row["label"], value=row["value"], source=row["source"],
+            confidence=confidence, severity=severity, url=row["url"]))
+    # A module that ran and found nothing has a status and no findings, and
+    # leaving it out would turn "checked, nothing there" into "never checked".
+    for module, (status, reason) in statuses.items():
+        if module in results:
+            continue
+        try:
+            module_status = ModuleStatus(status)
+        except ValueError:
+            module_status = ModuleStatus.SUCCESS
+        results[module] = ScanResult(module=module, target=record.target,
+                                     target_type=ttype, status=module_status,
+                                     status_reason=reason or "",
+                                     started_at=record.started_at)
+    inv.results = sorted(results.values(), key=lambda r: r.module)
+    inv.graph = store.graph(record.id)
+    return inv.analyse()
+
+
+def _case_or_fail(store: CaseStore, cid: str) -> Any:
+    inv = investigation_from_case(store, cid)
+    if inv is None:
+        print(f"no such case: {cid}", file=sys.stderr)
+    return inv
+
+
+def cmd_timeline(args: argparse.Namespace, store: CaseStore) -> int:
+    """The chronology of a saved case, as the sources dated it."""
+    inv = _case_or_fail(store, args.case)
+    if inv is None:
+        return EXIT_USAGE
+    line = inv.timeline
+    if line is None or not line.events:
+        print("nothing in this case carries a date a source stood behind.")
+        return EXIT_NO_FINDINGS
+    if args.format == "json":
+        print(json.dumps(line.to_dict(), indent=2, default=str))
+        return EXIT_OK
+    span = line.span_iso
+    print(f"{inv.target}: {len(line.events)} dated event(s)"
+          + (f", {span[0]} to {span[1]}" if span else ""))
+    print("dates are as the sources gave them, not when NOVA read them.\n")
+    for when, what, source in line.rows(args.limit):
+        print(f"  {when:<11} {what}  ({source})")
+    if line.dormant:
+        print("\nquiet since:")
+        for who, days in line.dormant[:10]:
+            print(f"  {who}: {days:.0f} days before this scan")
+    if line.clustered:
+        print("\ncreated close together - a question, not a conclusion:")
+        for a, b, gap in line.clustered[:10]:
+            print(f"  {a} and {b}: {gap:.1f} day(s) apart")
+    return EXIT_OK
+
+
+def cmd_contradictions(args: argparse.Namespace, store: CaseStore) -> int:
+    """Everything in a saved case that disagrees with something else in it."""
+    inv = _case_or_fail(store, args.case)
+    if inv is None:
+        return EXIT_USAGE
+    found = inv.contradictions
+    if args.format == "json":
+        print(json.dumps([c.to_dict() for c in found], indent=2, default=str))
+        return EXIT_OK if found else EXIT_NO_FINDINGS
+    if not found:
+        print("nothing in this case contradicts anything else in it.")
+        print("that is not the same as everything agreeing: see `nova show "
+              f"{args.case}` for what was never checked.")
+        return EXIT_NO_FINDINGS
+    print(f"{len(found)} contradiction(s) in {inv.target}\n")
+    print(reporting.CONTRADICTION_KEY + "\n")
+    for clash in found:
+        print(f"[{clash.severity.value}] {clash.type.value}: {clash.subject}")
+        print(f"  {clash.summary}")
+        for claim in clash.claims:
+            print(f"    - {claim.value}  ({claim.source})"
+                  + (f"  {claim.url}" if claim.url else ""))
+        print("  could be:")
+        for why in clash.possible_explanations:
+            print(f"    . {why}")
+        print(f"  status: {clash.resolution_status.value}\n")
+    return EXIT_OK
+
+
+def cmd_pivots(args: argparse.Namespace, store: CaseStore) -> int:
+    """What is worth looking at next in a saved case, best first.
+
+    Ranked by graph relevance rather than by the order modules happened to
+    report them, and it says out loud which leads were found and deliberately
+    *not* followed - a decision the reader cannot see is indistinguishable
+    from a source that was never checked.
+    """
+    inv = _case_or_fail(store, args.case)
+    if inv is None:
+        return EXIT_USAGE
+    graph = inv.graph
+    #: ``value -> (relevance, kind, reason)``. Two sources feed it, and the
+    #: graph is the better one: ``inv.pivots`` is the legacy flat list a module
+    #: writes by hand, while the frontier is the actual pivot engine - scored,
+    #: hub-demoted, and already excluding what was ruled out. A case whose
+    #: modules all emit typed entities has a rich frontier and no pivot rows at
+    #: all, so reading only the list reports "no leads" on a graph full of them.
+    ranked: dict[str, tuple[float, str, str]] = {}
+    if graph is not None:
+        # Every bound relaxed on purpose: this is a listing, not a walk, and a
+        # reader asking what is left wants the weak leads named and ranked last
+        # rather than silently withheld. The seed is the one exclusion - a
+        # pivot back to what was just scanned re-runs the scan.
+        for node in graph.frontier(min_score=0.0, max_depth=99):
+            if node.entity.eid == graph.seed:
+                continue
+            reason = "connected to the target"
+            if node.corroborations:
+                reason = f"{node.corroborations} independent source(s)"
+            ranked[node.entity.display] = (node.score,
+                                           node.entity.etype.value, reason)
+    for pivot in inv.pivots:
+        existing = ranked.get(pivot.target)
+        if existing is None:
+            ranked[pivot.target] = (0.0, pivot.target_type.value, pivot.reason)
+        else:
+            # Keep the graph's score, take the module's own words for why.
+            ranked[pivot.target] = (existing[0], existing[1], pivot.reason)
+    rows = sorted(((score, value, kind, reason)
+                   for value, (score, kind, reason) in ranked.items()),
+                  key=lambda row: (-row[0], row[1]))
+
+    if args.format == "json":
+        print(json.dumps([{
+            "value": value, "type": kind, "relevance": round(score, 4),
+            "reason": reason,
+        } for score, value, kind, reason in rows], indent=2, default=str))
+        return EXIT_OK if rows else EXIT_NO_FINDINGS
+    if not rows:
+        print("no unexplored leads were recorded for this case.")
+        return EXIT_NO_FINDINGS
+    print(f"{len(rows)} lead(s) from {inv.target}, most relevant first\n")
+    for score, value, kind, reason in rows[:args.limit]:
+        print(f"  {score:5.3f}  {value}  ({kind})  - {reason}")
+    contradicted = graph.contradicted() if graph is not None else []
+    if contradicted:
+        print("\nfound and ruled out - the evidence argues against these:")
+        for node in contradicted[:10]:
+            print(f"  {node.entity.display}  "
+                  f"({node.against:+.2f} against, {node.support:+.2f} for)")
+    return EXIT_OK
+
+
+def cmd_graph(args: argparse.Namespace, store: CaseStore) -> int:
+    """Export a saved case's graph, or print it."""
+    from pathlib import Path
+
+    inv = _case_or_fail(store, args.case)
+    if inv is None:
+        return EXIT_USAGE
+    renderer = reporting.RENDERERS.get(args.format)
+    if renderer is None:
+        print(f"unknown format: {args.format}", file=sys.stderr)
+        return EXIT_USAGE
+    rendered = renderer(inv)
+    if args.output:
+        path = Path(args.output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(rendered, "utf-8")
+        print(f"wrote {path}")
+        return EXIT_OK
+    print(rendered)
+    return EXIT_OK
+
+
 def summarise_for_terminal(store: CaseStore, case_id: str) -> str:
     """One line a scan can print after saving, so the case id is never lost."""
     record = store.case(case_id)

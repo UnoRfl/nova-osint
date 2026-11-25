@@ -82,6 +82,11 @@ def build_parser() -> argparse.ArgumentParser:
   nova replay <case>                           re-derive it from stored evidence
   nova evidence <case>                         verify that evidence still hashes
 
+  nova contradictions <case>                   what disagrees, and why it may be fine
+  nova timeline <case>                         the chronology, as the sources dated it
+  nova pivots <case>                           what is worth looking at next
+  nova graph <case> -f gexf -o case.gexf       the entity graph, for Gephi
+
   nova modules
   nova config show
 """,
@@ -196,6 +201,37 @@ def build_parser() -> argparse.ArgumentParser:
     whr.add_argument("value")
     whr.add_argument("-t", "--type", help="entity type, if the guess is wrong")
     _common(whr)
+
+    # The read-side views over a saved case. Each is a different question a
+    # reader actually asks of a finished scan, and each used to be answerable
+    # only by reading the whole report and doing the work in their head.
+    tml = sub.add_parser("timeline", help="the chronology of a saved case")
+    tml.add_argument("case", help="case id, or an unambiguous prefix of one")
+    tml.add_argument("-n", "--limit", type=int, default=60,
+                     help="how many events to print")
+    tml.add_argument("-f", "--format", choices=["text", "json"], default="text")
+    _common(tml)
+
+    con = sub.add_parser("contradictions",
+                         help="what disagrees with what, and why that may be fine")
+    con.add_argument("case")
+    con.add_argument("-f", "--format", choices=["text", "json"], default="text")
+    _common(con)
+
+    piv = sub.add_parser("pivots", help="what is worth looking at next, best first")
+    piv.add_argument("case")
+    piv.add_argument("-n", "--limit", type=int, default=30)
+    piv.add_argument("-f", "--format", choices=["text", "json"], default="text")
+    _common(piv)
+
+    grf = sub.add_parser("graph", help="export a saved case's entity graph")
+    grf.add_argument("case")
+    grf.add_argument("-f", "--format", default="graph",
+                     choices=sorted(reporting.RENDERERS),
+                     help="graph, graphml, gexf, graph-csv, json, ...")
+    grf.add_argument("-o", "--output", type=Path,
+                     help="write here instead of printing")
+    _common(grf)
 
     rep = sub.add_parser("replay", help="re-derive a case from its stored evidence")
     rep.add_argument("case")
@@ -686,8 +722,13 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
 
 #: Subcommands that read the case store and nothing else.
+#:
+#: Membership here is what actually routes a command, so a verb added to the
+#: parser and not to this set parses cleanly and then falls through to the
+#: top-level help - which looks exactly like a typo on the user's part.
 _CASE_COMMANDS = frozenset({"history", "show", "diff", "link", "where", "replay",
-                            "evidence", "phone"})
+                            "evidence", "phone", "timeline", "contradictions",
+                            "pivots", "graph"})
 
 
 def _run_case_command(args: argparse.Namespace) -> int:
@@ -722,6 +763,14 @@ def _run_case_command(args: argparse.Namespace) -> int:
             return commands.cmd_link(args, store)
         if args.command == "where":
             return commands.cmd_where(args, store)
+        if args.command == "timeline":
+            return commands.cmd_timeline(args, store)
+        if args.command == "contradictions":
+            return commands.cmd_contradictions(args, store)
+        if args.command == "pivots":
+            return commands.cmd_pivots(args, store)
+        if args.command == "graph":
+            return commands.cmd_graph(args, store)
         if args.command == "replay":
             return commands.cmd_replay(args, store, cfg)
         if args.command == "evidence":

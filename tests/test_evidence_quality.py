@@ -95,7 +95,11 @@ def test_repeats_of_one_kind_are_still_discounted():
 def _two_route_graph():
     seed = ent(T.DOMAIN, "target.example")
     g = EntityGraph(seed)
-    via_mail = ent(T.EMAIL, "admin@target.example")
+    # Personal on purpose. This fixture is about *corroboration*, and a role
+    # mailbox would additionally trip the identity demotion in
+    # ``graph.identity_discount`` - which is correct behaviour and is tested in
+    # test_role_addresses.py, but it would quietly change what this measures.
+    via_mail = ent(T.EMAIL, "j.rafael@target.example")
     via_host = ent(T.IP, "203.0.113.9")
     via_other = ent(T.EMAIL, "other@target.example")
     twice, once = ent(T.USERNAME, "reachedtwice"), ent(T.USERNAME, "reachedonce")
